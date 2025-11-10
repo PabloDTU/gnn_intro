@@ -72,4 +72,5 @@ def create_loader(unsupervised_train_fraction=0.0):
         print(f"Size of validation dataset: {len(loaders[2].dataset)}")
     if len(loaders) > 3:
         print(f"Size of test dataset: {len(loaders[3].dataset)}")
+        print("Test")
     return loaders
