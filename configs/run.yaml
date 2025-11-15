@@ -2,7 +2,7 @@ defaults:
   - dataset: qm9
   - trainer: semi-supervised-ensemble  # options: self-supervised, supervised
   - logger: wandb
-  - model: gcn
+  - model: edge_aware_gcn
   - _self_
 
 

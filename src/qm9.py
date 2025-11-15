@@ -59,7 +59,9 @@ class QM9DataModule(pl.LightningDataModule):
 
         # Shuffle dataset
         rng = np.random.default_rng(seed=self.seed)
-        dataset = dataset[rng.permutation(len(dataset))]
+        # Ensure dtype int64 for PyG indexing
+        perm = rng.permutation(len(dataset)).astype(np.int64)
+        dataset = dataset[perm]
 
         # Subset dataset
         if self.subset_size is not None:
@@ -71,12 +73,28 @@ class QM9DataModule(pl.LightningDataModule):
         elif all([type(split) == float for split in self.splits]):
             split_sizes = [int(len(dataset) * prop) for prop in self.splits]
 
-        split_idx = np.cumsum(split_sizes)
+        split_idx = np.cumsum(split_sizes).astype(int)
 
         self.data_train_unlabeled = dataset[:split_idx[0]]
         self.data_train_labeled = dataset[split_idx[0]:split_idx[1]]
         self.data_val = dataset[split_idx[1]:split_idx[2]]
         self.data_test = dataset[split_idx[2]:]
+
+        # Compute target mean/std on labeled training set for standardization
+        # y is expected to have shape [N, 1]
+        ys = []
+        for d in self.data_train_labeled:
+            y = d.y
+            if y is not None:
+                ys.append(y)
+        if len(ys) > 0:
+            y_cat = torch.vstack(ys).float()
+            self.y_mean = y_cat.mean(dim=0)  # [1]
+            self.y_std = y_cat.std(dim=0).clamp_min(1e-8)
+        else:
+            # Fallback if unavailable
+            self.y_mean = torch.zeros(1)
+            self.y_std = torch.ones(1)
 
         # Set batch sizes. We want the labeled batch size to be the one given by the user, and the unlabeled one to be so that we have the same number of batches
         self.batch_size_train_labeled = self.batch_size_train
@@ -88,6 +106,11 @@ class QM9DataModule(pl.LightningDataModule):
         print(f"QM9 dataset loaded with {len(self.data_train_labeled)} labeled, {len(self.data_train_unlabeled)} unlabeled, "
               f"{len(self.data_val)} validation, and {len(self.data_test)} test samples.")
         print(f"Batch sizes: labeled={self.batch_size_train_labeled}, unlabeled={self.batch_size_train_unlabeled}")
+
+    @property
+    def target_stats(self):
+        """Return (mean, std) tensors for target standardization."""
+        return self.y_mean, self.y_std
 
     def train_dataloader(self, shuffle=True) -> DataLoader:
         return DataLoader(

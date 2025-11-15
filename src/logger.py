@@ -47,7 +47,7 @@ class WandBLogger:
                 config=hparams,
                 project=self.project_name,
                 dir=self.dir,
-                entity=self.entity,
+                #entity=self.entity,
                 job_type=self.job_type,
             )
 
