@@ -192,8 +192,14 @@ class SemiSupervisedEnsemble:
                     x_lab = apply_feature_mask(x_lab, float(eff_feat_p))
 
                 # ---- supervised loss (same as before, possibly with standardised targets) ----
+                y_mean, y_std = self._get_y_stats()
+                if y_mean is not None and y_std is not None:
+                    targets_std = (targets - y_mean) / y_std
+                else:
+                    targets_std = targets
+
                 supervised_losses = [
-                    self.supervised_criterion(model(x_lab), targets)
+                    self.supervised_criterion(model(x_lab), targets_std)
                     for model in self.models
                 ]
                 supervised_loss = sum(supervised_losses)
