@@ -9,6 +9,17 @@ from torch_geometric.datasets import QM9
 from torch_geometric.transforms import BaseTransform
 from qm9_utils import DataLoader, GetTarget
 
+class StandardizeTarget(BaseTransform):
+    def __init__(self, mean, std):
+        super().__init__()
+        self.mean = mean
+        self.std = std
+
+    def forward(self, data):
+        if data.y is not None:
+            data.y = (data.y - self.mean) / self.std
+        return data
+
 class QM9DataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -95,6 +106,16 @@ class QM9DataModule(pl.LightningDataModule):
             # Fallback if unavailable
             self.y_mean = torch.zeros(1)
             self.y_std = torch.ones(1)
+        
+        # Apply standardization transform
+        # Standardise all targets
+        standardize = StandardizeTarget(self.y_mean, self.y_std)
+
+        # Standardise ONLY the labeled + validation + test targets
+        self.data_train_labeled = [standardize(d) for d in self.data_train_labeled]
+        self.data_val = [standardize(d) for d in self.data_val]
+        self.data_test = [standardize(d) for d in self.data_test]
+
 
         # Set batch sizes. We want the labeled batch size to be the one given by the user, and the unlabeled one to be so that we have the same number of batches
         self.batch_size_train_labeled = self.batch_size_train

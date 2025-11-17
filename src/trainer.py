@@ -180,8 +180,6 @@ class SemiSupervisedEnsemble:
             eff_feat_p = self.feature_mask_prob_default if feature_mask_prob is None else feature_mask_prob
             eff_clip_n = self.grad_clip_norm_default if grad_clip_norm is None else grad_clip_norm
 
-            y_mean, y_std = self._get_y_stats()
-
             for x, targets in self.train_dataloader:
                 x, targets = x.to(self.device), targets.to(self.device)
                 self.optimizer.zero_grad()
@@ -194,17 +192,10 @@ class SemiSupervisedEnsemble:
                     x_lab = apply_feature_mask(x_lab, float(eff_feat_p))
 
                 # ---- supervised loss (same as before, possibly with standardised targets) ----
-                if y_mean is not None and y_std is not None:
-                    targets_std = (targets - y_mean) / y_std
-                    supervised_losses = [
-                        self.supervised_criterion(model(x_lab), targets_std)
-                        for model in self.models
-                    ]
-                else:
-                    supervised_losses = [
-                        self.supervised_criterion(model(x_lab), targets)
-                        for model in self.models
-                    ]
+                supervised_losses = [
+                    self.supervised_criterion(model(x_lab), targets)
+                    for model in self.models
+                ]
                 supervised_loss = sum(supervised_losses)
                 supervised_losses_logged.append(
                     supervised_loss.detach().item() / len(self.models)
@@ -223,7 +214,6 @@ class SemiSupervisedEnsemble:
                             x_u_student = apply_edge_dropout(x_u_student, float(eff_edge_p))
                         if (eff_feat_p or 0) > 0:
                             x_u_student = apply_feature_mask(x_u_student, float(eff_feat_p))
-                        # you can optionally use different noise for teacher too
 
                         student_preds = [m(x_u_student) for m in self.models]
                         with torch.no_grad():
@@ -256,7 +246,7 @@ class SemiSupervisedEnsemble:
                 "supervised_loss": supervised_losses_logged,
             }
 
-            # validation + scheduler logic (mostly unchanged)
+            # validation + scheduler logic 
             if epoch % validation_interval == 0 or epoch == total_epochs:
                 val_metrics = self.validate()
                 summary_dict.update(val_metrics)
