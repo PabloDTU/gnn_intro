@@ -132,6 +132,9 @@ class QM9DataModule(pl.LightningDataModule):
             persistent_workers=True
         )
 
+    def unlabeled_dataloader(self, shuffle=True):
+        """Alias required by the Mean Teacher trainer."""
+        return self.unsupervised_train_dataloader(shuffle=shuffle)
 
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
