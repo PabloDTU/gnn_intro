@@ -121,7 +121,7 @@ class QM9DataModule(pl.LightningDataModule):
             pin_memory=True,
             persistent_workers=True
         )
-
+    
     def unsupervised_train_dataloader(self, shuffle=True) -> DataLoader:
         return DataLoader(
             self.data_train_unlabeled,

@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, global_mean_pool, AttentionalAggregation, JumpingKnowledge, NNConv
-# from torch_geometric.nn import GlobalAttention
 
 class GCN(torch.nn.Module):
     def __init__(self, num_node_features, hidden_channels=64, dropout=0.1):
@@ -85,7 +84,7 @@ class EdgeAwareGCNPlus(nn.Module):
     def __init__(self,
                  num_node_features: int,
                  num_edge_features: int,
-                 hidden_channels: int = 64,
+                 hidden_channels: int = 128,
                  dropout: float = 0.1):
         super().__init__()
 
@@ -112,8 +111,8 @@ class EdgeAwareGCNPlus(nn.Module):
         self.conv2 = NNConv(hidden_channels, hidden_channels, self.edge_mlp2, aggr='mean')
 
         # --- Normalisation ---
-        self.bn1 = nn.BatchNorm1d(hidden_channels)
-        self.bn2 = nn.BatchNorm1d(hidden_channels)
+        self.norm1 = nn.LayerNorm(hidden_channels) # LayerNorm because BatchNorm is unstable on graphs 
+        self.norm2 = nn.LayerNorm(hidden_channels)
 
         # --- Jumping Knowledge over layer outputs (we'll 'cat' them) ---
         self.jk = JumpingKnowledge(mode='cat', channels=hidden_channels, num_layers=self.num_layers)
@@ -129,7 +128,7 @@ class EdgeAwareGCNPlus(nn.Module):
 
         # --- Prediction head ---
         self.head = nn.Sequential(
-            nn.Linear(jk_dim, hidden_channels),
+            nn.Linear(jk_dim * 2, hidden_channels), # 2 * jk_dims because concatenation of 2 poolings
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_channels, 1)
@@ -141,14 +140,14 @@ class EdgeAwareGCNPlus(nn.Module):
 
         # ----- Layer 1 -----
         h = self.conv1(x, edge_index, edge_attr)
-        h = self.bn1(h)
+        h = self.norm1(h)
         h = F.relu(h)
         h = F.dropout(h, p=self.dropout, training=self.training)
         layer_outs.append(h)  # store 1-hop features
 
         # ----- Layer 2 + residual -----
         h2 = self.conv2(h, edge_index, edge_attr)
-        h2 = self.bn2(h2)
+        h2 = self.norm2(h2)
         h2 = F.relu(h2)
         h2 = F.dropout(h2, p=self.dropout, training=self.training)
         h = h + h2                    # residual keeps earlier signal
@@ -158,7 +157,9 @@ class EdgeAwareGCNPlus(nn.Module):
         x = self.jk(layer_outs)       # [N, hidden * num_layers] when mode='cat'
 
         # ----- Attention pooling to graph embedding -----
-        x = self.att_pool(x, batch)   # [B, hidden * num_layers]
+        mean_pool = global_mean_pool(x, batch)
+        att_pool = self.att_pool(x, batch)
+        x = torch.cat([mean_pool, att_pool], dim=-1) # Concatenate attention pooling with mean pooling 
 
         # ----- Head -----
         out = self.head(x)            # [B, 1]

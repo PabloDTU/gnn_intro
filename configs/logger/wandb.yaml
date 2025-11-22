@@ -7,5 +7,5 @@ name: ${model.name}_seed=${seed} # Name of the run for wandb
 job_type: test
 entity: deep_learning_project2
 project_name: deep_learning_project
-disable: false
+disable: true
 local_dir: ./logs #Directory to save logs
