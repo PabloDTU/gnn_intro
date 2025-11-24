@@ -243,17 +243,21 @@ class SemiSupervisedEnsemble:
         return ncpl_loss
 
     # ------------------------------------------------------------------
-    # Mean-teacher consistency loss on a batch
+    # Mean-teacher consistency loss on an unlabeled batch
     # ------------------------------------------------------------------
-    def _compute_mean_teacher_loss(self, x) -> torch.Tensor:
+    def _compute_mean_teacher_loss(self, x_u) -> torch.Tensor:
+        """Consistency between student ensemble and EMA teacher on unlabeled data.
+
+        x_u: unlabeled batch from the unlabeled_dataloader.
+        """
         if not self.use_mean_teacher or self.teacher_models is None:
             return torch.tensor(0.0, device=self.device)
 
         with torch.no_grad():
-            teacher_preds = [tm(x) for tm in self.teacher_models]
+            teacher_preds = [tm(x_u) for tm in self.teacher_models]
             teacher_mean = torch.stack(teacher_preds).mean(0)
 
-        student_preds = [m(x) for m in self.models]
+        student_preds = [m(x_u) for m in self.models]
         student_mean = torch.stack(student_preds).mean(0)
 
         return ((student_mean - teacher_mean) ** 2).mean()
@@ -407,15 +411,16 @@ class SemiSupervisedEnsemble:
                 # N-CPL loss on labeled batch
                 ncpl_loss = self._compute_ncpl_loss(preds_ensemble)
 
-                # Mean-teacher consistency on labeled batch
-                mt_loss = self._compute_mean_teacher_loss(x)
-
                 # ------------------- VAT unsupervised loss -------------------
                 vat_loss = torch.tensor(0.0, device=self.device)
-                if self.use_vat and self.unlabeled_dataloader is not None:
+                mt_loss = torch.tensor(0.0, device=self.device)
+                if self.unlabeled_dataloader is not None:
                     x_u = self._get_unlabeled_batch()
                     if x_u is not None:
-                        vat_loss = self._compute_vat_loss(x_u)
+                        if self.use_vat:
+                            vat_loss = self._compute_vat_loss(x_u)
+                        if self.use_mean_teacher:
+                            mt_loss = self._compute_mean_teacher_loss(x_u)
 
                 ramp = self._unsup_rampup(epoch)
                 total_loss = (
