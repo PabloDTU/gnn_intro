@@ -4,30 +4,40 @@ defaults:
 method: semi-supervised-ensemble
 
 train:
-  total_epochs: 300
+  total_epochs: 400
   validation_interval: 10
 
 init:
   _target_: trainer.SemiSupervisedEnsemble
   supervised_criterion:
     _target_: torch.nn.MSELoss
+    reduction: mean
+
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 0.001            # base learning rate
-    weight_decay: 0.01    # slightly higher for AdamW regularisation
+    lr: 1e-3
+    weight_decay: 1e-4
+
   scheduler:
-    _target_: schedulers.build_warmup_cosine
+    _target_: schedulers.build_onecycle
     _partial_: true
-    warmup_epochs: 10         # epochs for linear warmup
-    total_epochs: ${trainer.train.total_epochs}
-    warmup_start_factor: 0.1  # start at 10% of base LR
-    eta_min: 1e-5             # minimum LR at end of cosine
-  scheduler_step_on: epoch    # or 'val_MSE' if using ReduceLROnPlateau
-  # Regularization knobs
-  edge_drop_prob: 0.0         # 0.0-0.2 recommended to start
-  feature_mask_prob: 0.0      # 0.0-0.2 recommended to start
-  grad_clip_norm: 0.0         # e.g., 5.0 to enable
+    max_lr: 1e-3
+    total_steps: ${trainer.train.total_epochs}
+    pct_start: 0.3
+    div_factor: 25
+    final_div_factor: 1e4
+  scheduler_step_on: epoch
 
+  # Existing regularization
+  edge_drop_prob: 0.05
+  feature_mask_prob: 0.05
+  grad_clip_norm: 5.0
 
-    
+  # VAT knobs
+  use_vat: true
+  unsup_weight: 8.0
+  unsup_rampup_epochs: 50
+  vat_eps: 0.09
+  vat_xi: 0.001
+  vat_iters: 2

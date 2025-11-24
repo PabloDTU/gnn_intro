@@ -70,7 +70,6 @@ class GCN(torch.nn.Module):
         return x
 
 
-# Edge-aware GCN model
 class EdgeAwareGCNPlus(nn.Module):
     """
     Edge-aware 2-layer GCN with:
@@ -78,14 +77,16 @@ class EdgeAwareGCNPlus(nn.Module):
       - BN + ReLU + Dropout + Residual
       - Jumping Knowledge ('cat') across layers
       - Attention-based global pooling
-    Assumes data carries: x, edge_index, edge_attr, batch
+    Produces a graph-level embedding, then a scalar regression output.
     """
 
-    def __init__(self,
-                 num_node_features: int,
-                 num_edge_features: int,
-                 hidden_channels: int = 128,
-                 dropout: float = 0.1):
+    def __init__(
+        self,
+        num_node_features: int,
+        num_edge_features: int,
+        hidden_channels: int = 64,
+        dropout: float = 0.1,
+    ):
         super().__init__()
 
         self.num_layers = 2
@@ -93,74 +94,96 @@ class EdgeAwareGCNPlus(nn.Module):
         self.dropout = dropout
 
         # --- Edge networks (produce per-edge weight matrices) ---
-        # conv1: in=num_node_features, out=hidden -> weights of size (in*out)
         self.edge_mlp1 = nn.Sequential(
             nn.Linear(num_edge_features, hidden_channels),
             nn.ReLU(),
-            nn.Linear(hidden_channels, num_node_features * hidden_channels)
+            nn.Linear(hidden_channels, num_node_features * hidden_channels),
         )
-        # conv2: in=hidden, out=hidden -> weights of size (hidden*hidden)
         self.edge_mlp2 = nn.Sequential(
             nn.Linear(num_edge_features, hidden_channels),
             nn.ReLU(),
-            nn.Linear(hidden_channels, hidden_channels * hidden_channels)
+            nn.Linear(hidden_channels, hidden_channels * hidden_channels),
         )
 
         # --- Convolutions ---
-        self.conv1 = NNConv(num_node_features, hidden_channels, self.edge_mlp1, aggr='mean')
-        self.conv2 = NNConv(hidden_channels, hidden_channels, self.edge_mlp2, aggr='mean')
+        self.conv1 = NNConv(
+            num_node_features, hidden_channels, self.edge_mlp1, aggr="mean"
+        )
+        self.conv2 = NNConv(
+            hidden_channels, hidden_channels, self.edge_mlp2, aggr="mean"
+        )
 
         # --- Normalisation ---
-        self.norm1 = nn.LayerNorm(hidden_channels) # LayerNorm because BatchNorm is unstable on graphs 
-        self.norm2 = nn.LayerNorm(hidden_channels)
+        self.bn1 = nn.BatchNorm1d(hidden_channels)
+        self.bn2 = nn.BatchNorm1d(hidden_channels)
 
         # --- Jumping Knowledge over layer outputs (we'll 'cat' them) ---
-        self.jk = JumpingKnowledge(mode='cat', channels=hidden_channels, num_layers=self.num_layers)
-        jk_dim = hidden_channels * self.num_layers  # 64 * 2 = 128 by default
+        self.jk = JumpingKnowledge(
+            mode="cat", channels=hidden_channels, num_layers=self.num_layers
+        )
+        jk_dim = hidden_channels * self.num_layers
+
+        # 🔹 store embedding dimension so the trainer can use it
+        self.jk_dim = jk_dim
 
         # --- Attention pooling (learned gate over nodes) ---
         self.att_gate = nn.Sequential(
             nn.Linear(jk_dim, jk_dim // 2),
             nn.ReLU(),
-            nn.Linear(jk_dim // 2, 1)
+            nn.Linear(jk_dim // 2, 1),
         )
         self.att_pool = AttentionalAggregation(gate_nn=self.att_gate)
 
         # --- Prediction head ---
         self.head = nn.Sequential(
-            nn.Linear(jk_dim * 2, hidden_channels), # 2 * jk_dims because concatenation of 2 poolings
+            nn.Linear(jk_dim, hidden_channels),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_channels, 1)
+            nn.Linear(hidden_channels, 1),
         )
 
-    def forward(self, data):
-        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+    def encode_graph(self, data):
+        """
+        Forward pass up to the graph-level embedding (before the final head).
+        This is what GraphMix will operate on.
+        """
+        x, edge_index, edge_attr, batch = (
+            data.x,
+            data.edge_index,
+            data.edge_attr,
+            data.batch,
+        )
+
         layer_outs = []
 
         # ----- Layer 1 -----
         h = self.conv1(x, edge_index, edge_attr)
-        h = self.norm1(h)
+        h = self.bn1(h)
         h = F.relu(h)
         h = F.dropout(h, p=self.dropout, training=self.training)
-        layer_outs.append(h)  # store 1-hop features
+        layer_outs.append(h)  # 1-hop features
 
         # ----- Layer 2 + residual -----
         h2 = self.conv2(h, edge_index, edge_attr)
-        h2 = self.norm2(h2)
+        h2 = self.bn2(h2)
         h2 = F.relu(h2)
         h2 = F.dropout(h2, p=self.dropout, training=self.training)
-        h = h + h2                    # residual keeps earlier signal
-        layer_outs.append(h)          # store 2-hop (post-residual) features
+        h = h + h2  # residual
+        layer_outs.append(h)  # 2-hop features
 
         # ----- Jumping Knowledge combine -----
-        x = self.jk(layer_outs)       # [N, hidden * num_layers] when mode='cat'
+        x = self.jk(layer_outs)  # [N, hidden * num_layers]
 
         # ----- Attention pooling to graph embedding -----
-        mean_pool = global_mean_pool(x, batch)
-        att_pool = self.att_pool(x, batch)
-        x = torch.cat([mean_pool, att_pool], dim=-1) # Concatenate attention pooling with mean pooling 
+        g = self.att_pool(x, batch)  # [B, jk_dim]
 
-        # ----- Head -----
-        out = self.head(x)            # [B, 1]
+        return g
+
+    def forward(self, data):
+        """
+        Standard forward: encode graph to an embedding, then apply prediction head.
+        """
+        g = self.encode_graph(data)  # [B, jk_dim]
+        out = self.head(g)           # [B, 1]
         return out
+

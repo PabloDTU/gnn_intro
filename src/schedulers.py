@@ -47,23 +47,49 @@ def build_warmup_cosine(
     )
 
 
-def build_reduce_on_plateau(
-    optimizer: torch.optim.Optimizer,
-    mode: str = "min",
-    factor: float = 0.5,
-    patience: int = 10,
-    min_lr: float = 1e-6,
-    threshold: float = 1e-4,
+def build_onecycle(
+    optimizer,
+    max_lr: float,
+    total_steps: int,
+    pct_start: float = 0.3,
+    div_factor: float = 25.0,
+    final_div_factor: float = 1e4,
+    three_phase: bool = False,
 ):
     """
-    ReduceLROnPlateau factory configured for validation MSE minimization.
+    Build a OneCycleLR scheduler.
+
+    Parameters
+    ----------
+    optimizer : torch.optim.Optimizer
+        The optimizer to apply the schedule to.
+    max_lr : float
+        The maximum learning rate the scheduler will reach.
+    total_steps : int
+        The total number of steps (epochs * steps_per_epoch or directly epochs).
+    pct_start : float, optional
+        Percentage of total steps spent increasing the learning rate.
+    div_factor : float, optional
+        Determines initial learning rate = max_lr / div_factor.
+    final_div_factor : float, optional
+        Determines minimum learning rate = initial_lr / final_div_factor.
+    three_phase : bool, optional
+        If True, use 3-phase cycle.
+
+    Returns
+    -------
+    torch.optim.lr_scheduler.OneCycleLR
     """
-    return torch.optim.lr_scheduler.ReduceLROnPlateau(
+
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        mode=mode,
-        factor=factor,
-        patience=patience,
-        min_lr=min_lr,
-        threshold=threshold,
-        verbose=True,
+        max_lr=max_lr,
+        total_steps=total_steps,
+        pct_start=pct_start,
+        div_factor=div_factor,
+        final_div_factor=final_div_factor,
+        three_phase=three_phase,
+        anneal_strategy="cos",  # smoother decay
     )
+
+    return scheduler
