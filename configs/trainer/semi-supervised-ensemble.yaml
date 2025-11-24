@@ -4,8 +4,9 @@ defaults:
 method: semi-supervised-ensemble
 
 train:
-  total_epochs: 400
+  total_epochs: 20
   validation_interval: 10
+  save_best_path: "checkpoints/best_model.pt"
 
 init:
   _target_: trainer.SemiSupervisedEnsemble

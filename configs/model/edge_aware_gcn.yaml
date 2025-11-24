@@ -8,5 +8,5 @@ init:
   _partial_: false
   num_node_features: 11         # from your dataset
   num_edge_features: 4          # << match your printed edge_attr shape
-  hidden_channels: 128
+  hidden_channels: 64
   dropout: 0.1
