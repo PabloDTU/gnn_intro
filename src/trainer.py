@@ -3,6 +3,7 @@ from functools import partial
 import numpy as np
 import torch
 from tqdm import tqdm
+import os
 
 from regularizers import apply_edge_dropout, apply_feature_mask
 
@@ -51,6 +52,11 @@ class SemiSupervisedEnsemble:
     ):
         self.device = device
         self.models = models
+
+        # --- NEW: best validation tracking ---
+        self.best_val_mse = float("inf")
+        self.checkpoint_dir = "checkpoints"
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         # ----- Optimizer + scheduler -----
         self.supervised_criterion = supervised_criterion
@@ -333,6 +339,25 @@ class SemiSupervisedEnsemble:
             if epoch % validation_interval == 0 or epoch == total_epochs:
                 val_metrics = self.validate()
                 summary_dict.update(val_metrics)
+
+                val_mse = val_metrics.get("val_MSE", None)
+                if val_mse is not None:
+                    # --- NEW: save best checkpoint ---
+                    if val_mse < self.best_val_mse:
+                        self.best_val_mse = val_mse
+                        ckpt_path = os.path.join(self.checkpoint_dir, "best_model.pt")
+
+                        # If you have an ensemble, you can save all models;
+                        # here I save only the first one for simplicity.
+                        torch.save(
+                            {
+                                "model_state_dict": self.models[0].state_dict(),
+                                "val_MSE": val_mse,
+                                "epoch": epoch,
+                            },
+                            ckpt_path,
+                        )
+                        print(f"[CHECKPOINT] New best val_MSE={val_mse:.6f}, saved to {ckpt_path}")
 
                 if self.scheduler_step_on == "val_MSE":
                     if hasattr(self.scheduler, "step"):

@@ -16,28 +16,28 @@ init:
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 1e-3
-    weight_decay: 1e-4
+    lr: 7e-4
+    weight_decay: 0.0
 
   scheduler:
     _target_: schedulers.build_onecycle
     _partial_: true
-    max_lr: 1e-3
+    max_lr: 7e-4
     total_steps: ${trainer.train.total_epochs}
-    pct_start: 0.3
-    div_factor: 25
-    final_div_factor: 1e4
+    pct_start: 0.2
+    div_factor: 20
+    final_div_factor: 5000
   scheduler_step_on: epoch
 
   # Existing regularization
-  edge_drop_prob: 0.05
-  feature_mask_prob: 0.05
+  edge_drop_prob: 0.0 # VAT already injects perturbations
+  feature_mask_prob: 0.02
   grad_clip_norm: 5.0
 
   # VAT knobs
   use_vat: true
-  unsup_weight: 8.0
-  unsup_rampup_epochs: 50
-  vat_eps: 0.09
-  vat_xi: 0.001
-  vat_iters: 2
+  unsup_weight: 1.5
+  unsup_rampup_epochs: 80
+  vat_eps: 0.025
+  vat_xi: 0.0005
+  vat_iters: 1
