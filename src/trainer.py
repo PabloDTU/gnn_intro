@@ -1,4 +1,5 @@
 from functools import partial
+from copy import deepcopy
 
 import numpy as np
 import torch
@@ -48,6 +49,17 @@ class SemiSupervisedEnsemble:
         vat_eps: float = 2e-2,
         vat_xi: float = 1e-3,
         vat_iters: int = 1,
+
+        # ----- Neighborhood-Consistent Pseudo-Labeling (N-CPL) knobs -----
+        use_ncpl: bool = False,
+        ncpl_weight: float = 1.0,
+        ncpl_k: int = 5,
+        ncpl_alpha: float = 0.5,
+
+        # ----- Mean-teacher knobs -----
+        use_mean_teacher: bool = False,
+        mean_teacher_weight: float = 1.0,
+        mean_teacher_ema_decay: float = 0.99,
     ):
         self.device = device
         self.models = models
@@ -74,6 +86,17 @@ class SemiSupervisedEnsemble:
         self.vat_xi = vat_xi
         self.vat_iters = vat_iters
 
+        # ----- N-CPL config -----
+        self.use_ncpl = use_ncpl
+        self.ncpl_weight = ncpl_weight
+        self.ncpl_k = ncpl_k
+        self.ncpl_alpha = ncpl_alpha
+
+        # ----- Mean-teacher config -----
+        self.use_mean_teacher = use_mean_teacher
+        self.mean_teacher_weight = mean_teacher_weight
+        self.mean_teacher_ema_decay = mean_teacher_ema_decay
+
         # ----- Dataloaders -----
         self.datamodule = datamodule
         self.train_dataloader = datamodule.train_dataloader()
@@ -93,6 +116,14 @@ class SemiSupervisedEnsemble:
 
         # Cache for target mean/std
         self.y_stats = None
+
+        # Teacher models (for mean-teacher)
+        if self.use_mean_teacher:
+            self.teacher_models = [deepcopy(m).to(self.device) for m in self.models]
+            for tm in self.teacher_models:
+                tm.eval()
+        else:
+            self.teacher_models = None
 
     # ------------------------------------------------------------------
     # Helper: get (and cache) target mean/std from datamodule
@@ -159,6 +190,73 @@ class SemiSupervisedEnsemble:
         norm = flat.norm(p=2, dim=1, keepdim=True) + eps
         flat_normed = flat / norm
         return flat_normed.view_as(t)
+
+    # ------------------------------------------------------------------
+    # Helper: update teacher models with EMA
+    # ------------------------------------------------------------------
+    def _update_teacher_models(self):
+        if not self.use_mean_teacher or self.teacher_models is None:
+            return
+        decay = self.mean_teacher_ema_decay
+        for student, teacher in zip(self.models, self.teacher_models):
+            with torch.no_grad():
+                for p_s, p_t in zip(student.parameters(), teacher.parameters()):
+                    p_t.data.mul_(decay).add_(p_s.data, alpha=1.0 - decay)
+
+    # ------------------------------------------------------------------
+    # N-CPL loss on a batch of graph-level predictions
+    # ------------------------------------------------------------------
+    def _compute_ncpl_loss(self, preds: torch.Tensor) -> torch.Tensor:
+        """Neighborhood-consistent pseudo-labeling on batch predictions.
+
+        preds: [B, 1] tensor of graph-level predictions (ensemble-averaged).
+        For each sample i, build pseudo-label from k nearest neighbors in
+        prediction space and penalize deviation from that pseudo label.
+        """
+        if not self.use_ncpl:
+            return torch.tensor(0.0, device=self.device)
+
+        if preds.dim() == 1:
+            preds = preds.unsqueeze(-1)
+
+        B = preds.size(0)
+        if B <= 1:
+            return torch.tensor(0.0, device=self.device)
+
+        # Pairwise distances in prediction space
+        with torch.no_grad():
+            diff = preds.unsqueeze(0) - preds.unsqueeze(1)  # [B, B, 1]
+            dist = (diff ** 2).sum(-1)  # [B, B]
+            # Exclude self by setting large distance on diagonal
+            diag_idx = torch.arange(B, device=self.device)
+            dist[diag_idx, diag_idx] = float("inf")
+
+            k = min(self.ncpl_k, B - 1)
+            knn_idx = torch.topk(dist, k=k, largest=False).indices  # [B, k]
+
+        neighbor_preds = preds[knn_idx]  # [B, k, 1]
+        neighbor_mean = neighbor_preds.mean(dim=1)  # [B, 1]
+
+        alpha = self.ncpl_alpha
+        pseudo = alpha * preds + (1.0 - alpha) * neighbor_mean
+        ncpl_loss = ((preds - pseudo.detach()) ** 2).mean()
+        return ncpl_loss
+
+    # ------------------------------------------------------------------
+    # Mean-teacher consistency loss on a batch
+    # ------------------------------------------------------------------
+    def _compute_mean_teacher_loss(self, x) -> torch.Tensor:
+        if not self.use_mean_teacher or self.teacher_models is None:
+            return torch.tensor(0.0, device=self.device)
+
+        with torch.no_grad():
+            teacher_preds = [tm(x) for tm in self.teacher_models]
+            teacher_mean = torch.stack(teacher_preds).mean(0)
+
+        student_preds = [m(x) for m in self.models]
+        student_mean = torch.stack(student_preds).mean(0)
+
+        return ((student_mean - teacher_mean) ** 2).mean()
 
     # ------------------------------------------------------------------
     # VAT loss on a single unlabeled batch
@@ -302,6 +400,16 @@ class SemiSupervisedEnsemble:
                     supervised_loss.detach().item() / len(self.models)
                 )
 
+                # Ensemble-averaged predictions for consistency losses
+                with torch.no_grad():
+                    preds_ensemble = torch.stack([m(x) for m in self.models]).mean(0)
+
+                # N-CPL loss on labeled batch
+                ncpl_loss = self._compute_ncpl_loss(preds_ensemble)
+
+                # Mean-teacher consistency on labeled batch
+                mt_loss = self._compute_mean_teacher_loss(x)
+
                 # ------------------- VAT unsupervised loss -------------------
                 vat_loss = torch.tensor(0.0, device=self.device)
                 if self.use_vat and self.unlabeled_dataloader is not None:
@@ -310,7 +418,12 @@ class SemiSupervisedEnsemble:
                         vat_loss = self._compute_vat_loss(x_u)
 
                 ramp = self._unsup_rampup(epoch)
-                total_loss = supervised_loss + ramp * self.unsup_weight * vat_loss
+                total_loss = (
+                    supervised_loss
+                    + self.ncpl_weight * ncpl_loss
+                    + self.mean_teacher_weight * mt_loss
+                    + ramp * self.unsup_weight * vat_loss
+                )
 
                 # Backprop on combined loss
                 total_loss.backward()
@@ -324,6 +437,9 @@ class SemiSupervisedEnsemble:
                         torch.nn.utils.clip_grad_norm_(params, float(eff_clip_n))
 
                 self.optimizer.step()
+
+                # Update mean-teacher models
+                self._update_teacher_models()
 
             # ------------------- End epoch: logging + scheduler -------------------
             supervised_losses_logged = float(np.mean(supervised_losses_logged))

@@ -41,3 +41,14 @@ init:
   vat_eps: 0.09
   vat_xi: 0.001
   vat_iters: 2
+
+  # Neighborhood-Consistent Pseudo-Labeling (N-CPL)
+  use_ncpl: false
+  ncpl_weight: 1.0
+  ncpl_k: 5
+  ncpl_alpha: 0.5
+
+  # Mean-teacher
+  use_mean_teacher: false
+  mean_teacher_weight: 1.0
+  mean_teacher_ema_decay: 0.99
