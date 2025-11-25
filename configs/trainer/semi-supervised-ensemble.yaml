@@ -11,31 +11,22 @@ init:
   _target_: trainer.SemiSupervisedEnsemble
   supervised_criterion:
     _target_: torch.nn.MSELoss
+  consistency_criterion:
+    _target_: torch.nn.MSELoss
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 0.001            # base learning rate
-    weight_decay: 0.01    # slightly higher for AdamW regularisation
+    lr: 0.001
+    weight_decay: 0.01
   scheduler:
     _target_: schedulers.build_warmup_cosine
     _partial_: true
-    warmup_epochs: 10         # epochs for linear warmup
-    total_epochs: ${trainer.train.total_epochs}
-    warmup_start_factor: 0.1  # start at 10% of base LR
-    eta_min: 1e-5             # minimum LR at end of cosine
-  scheduler_step_on: epoch    # or 'val_MSE' if using ReduceLROnPlateau
-  # Regularization knobs
-  edge_drop_prob: 0.0         # 0.0-0.2 recommended to start
-  feature_mask_prob: 0.0      # 0.0-0.2 recommended to start
-  grad_clip_norm: 0.0         # e.g., 5.0 to enable
-
-# Alternative ReduceLROnPlateau example (commented):
-#  scheduler:
-#    _target_: schedulers.build_reduce_on_plateau
-#    _partial_: true
-#    factor: 0.5
-#    patience: 15
-#    min_lr: 1e-6
-#  scheduler_step_on: val_MSE
+    warmup_epochs: 10
+    total_epochs:  ${trainer.train.total_epochs}
+    warmup_start_factor: 0.1
+    eta_min: 1e-5
+  ema_decay: 0.999
+  max_consistency_weight: 10.0
+  rampup_epochs: 80
 
     

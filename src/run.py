@@ -63,28 +63,42 @@ def main(cfg):
         except Exception as e:
             print(f"[DEBUG] Failed to sample a batch for inspection: {e}")
 
+    # if cfg.compile_model:
+    #     model = torch.compile(model)
+    #models = [model]
+    # trainer = hydra.utils.instantiate(
+    #     cfg.trainer.init,
+    #     models=models,
+    #     logger=logger,
+    #     datamodule=dm,
+    #     device=device,
+    # )
     if cfg.compile_model:
-        model = torch.compile(model)
-    models = [model]
+        student_model = torch.compile(student_model)
+    student_model = hydra.utils.instantiate(cfg.model.init).to(device)
+    teacher_model = hydra.utils.instantiate(cfg.model.init).to(device)
     trainer = hydra.utils.instantiate(
         cfg.trainer.init,
-        models=models,
+        student_model=student_model,
+        teacher_model=teacher_model,
         logger=logger,
         datamodule=dm,
         device=device,
     )
 
+
     # Pull optional regularization params from config if present
-    edge_p = getattr(cfg.trainer.init, 'edge_drop_prob', 0.0)
-    feat_p = getattr(cfg.trainer.init, 'feature_mask_prob', 0.0)
-    clip_n = getattr(cfg.trainer.init, 'grad_clip_norm', 0.0)
-    results = trainer.train(
-        **cfg.trainer.train,
-        edge_drop_prob=edge_p,
-        feature_mask_prob=feat_p,
-        grad_clip_norm=clip_n if clip_n and clip_n > 0 else None,
-    )
+    # edge_p = getattr(cfg.trainer.init, 'edge_drop_prob', 0.0)
+    # feat_p = getattr(cfg.trainer.init, 'feature_mask_prob', 0.0)
+    # clip_n = getattr(cfg.trainer.init, 'grad_clip_norm', 0.0)
+    # results = trainer.train(
+    #     **cfg.trainer.train,
+    #     edge_drop_prob=edge_p,
+    #     feature_mask_prob=feat_p,
+    #     grad_clip_norm=clip_n if clip_n and clip_n > 0 else None,
+    # )
     #results = torch.Tensor(results)
+    results = trainer.train(**cfg.trainer.train)
 
 
 
