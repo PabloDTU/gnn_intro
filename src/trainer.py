@@ -88,8 +88,8 @@ class SemiSupervisedEnsemble:
 
         # Optional unlabeled dataloader for VAT
         self.unlabeled_dataloader = (
-            datamodule.unlabeled_dataloader()
-            if hasattr(datamodule, "unlabeled_dataloader")
+            datamodule.unsupervised_train_dataloader()
+            if hasattr(datamodule, "unsupervised_train_dataloader")
             else None
         )
         self._unlabeled_iter = None

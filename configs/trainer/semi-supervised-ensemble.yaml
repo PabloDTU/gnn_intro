@@ -17,21 +17,21 @@ init:
     _target_: torch.optim.AdamW
     _partial_: true
     lr: 7e-4
-    weight_decay: 0.0
+    weight_decay: 0.0001
 
   scheduler:
     _target_: schedulers.build_onecycle
     _partial_: true
-    max_lr: 7e-4
+    max_lr: 8e-4
     total_steps: ${trainer.train.total_epochs}
-    pct_start: 0.2
-    div_factor: 20
-    final_div_factor: 5000
+    pct_start: 0.1
+    div_factor: 10
+    final_div_factor: 1000
   scheduler_step_on: epoch
 
   # Existing regularization
-  edge_drop_prob: 0.0 # VAT already injects perturbations
-  feature_mask_prob: 0.02
+  edge_drop_prob: 0.05 # VAT already injects perturbations
+  feature_mask_prob: 0.05
   grad_clip_norm: 5.0
 
   # VAT knobs
