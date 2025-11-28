@@ -14,11 +14,15 @@ def resolve_target(target_str: str):
     module = importlib.import_module(module_name)
     return getattr(module, cls_name)
 
+def _clean_cfg(cfg_dict: dict) -> dict:
+    """Drop Hydra helper keys like _target_/_partial_."""
+    return {k: v for k, v in cfg_dict.items() if not k.startswith('_')}
 
 def load_model(ckpt_path: Path, model_cfg_path: Path, device: torch.device):
     cfg = OmegaConf.load(model_cfg_path)
     model_cfg = OmegaConf.to_container(cfg.init, resolve=True)
     target = model_cfg.pop('_target_', 'models.EdgeAwareGCNPlus')
+    model_cfg = _clean_cfg(model_cfg)
     ModelCls = resolve_target(target)
 
     model = ModelCls(**model_cfg).to(device)
@@ -78,37 +82,40 @@ def evaluate_ensemble(models, loader, y_mean, y_std, device):
 def load_datamodule(dataset_cfg_path: Path):
     cfg = OmegaConf.load(dataset_cfg_path)
     dm_kwargs = OmegaConf.to_container(cfg.init, resolve=True)
-    dm_kwargs.pop('_target_', None)
+    dm_kwargs = _clean_cfg(dm_kwargs)
     dm = QM9DataModule(**dm_kwargs)
     return dm
 
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate VAT vs non-VAT checkpoints on the QM9 test split')
-    parser.add_argument('--ckpt_vat', type=Path, required=True, help='Path to VAT-trained checkpoint (best_model.pt)')
-    parser.add_argument('--ckpt_no_vat', type=Path, required=True, help='Path to non-VAT checkpoint (best_model.pt)')
+    parser.add_argument('--ckpt_vat', type=Path, default=Path('checkpoints/best_model_VAT.pt'), help='Path to VAT-trained checkpoint (best_model.pt)')
+    parser.add_argument('--ckpt_no_vat', type=Path, default=Path('checkpoints/best_model_noVAT.pt'), help='Path to non-VAT checkpoint (best_model.pt)')
     parser.add_argument('--model_cfg', type=Path, default=Path('configs/model/edge_aware_gcn.yaml'), help='Model config YAML')
     parser.add_argument('--dataset_cfg', type=Path, default=Path('configs/dataset/qm9.yaml'), help='Dataset config YAML')
     parser.add_argument('--device', type=str, default='auto', help='cuda, cpu, or auto')
     args = parser.parse_args()
 
-    device = torch.device('cuda' if args.device == 'auto' and torch.cuda.is_available() else args.device)
+    if args.device == 'auto':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device(args.device)
 
     dm = load_datamodule(args.dataset_cfg)
     test_loader = dm.test_dataloader()
     y_mean, y_std = dm.target_stats
 
-    model_vat, state_vat = load_model(args.ckpt_vat, args.model_cfg, device)
+    #model_vat, state_vat = load_model(args.ckpt_vat, args.model_cfg, device)
     model_no_vat, state_no_vat = load_model(args.ckpt_no_vat, args.model_cfg, device)
 
-    vat_mse = evaluate(model_vat, test_loader, y_mean, y_std, device)
+    #vat_mse = evaluate(model_vat, test_loader, y_mean, y_std, device)
     no_vat_mse = evaluate(model_no_vat, test_loader, y_mean, y_std, device)
-    ensemble_mse = evaluate_ensemble([model_vat, model_no_vat], test_loader, y_mean, y_std, device)
+    #ensemble_mse = evaluate_ensemble([model_vat, model_no_vat], test_loader, y_mean, y_std, device)
 
     print('=== Test MSE ===')
-    print(f"VAT model      : {vat_mse:.6f} (epoch {state_vat.get('epoch', 'n/a')}, val {state_vat.get('val_MSE', 'n/a')})")
+    #print(f"VAT model      : {vat_mse:.6f} (epoch {state_vat.get('epoch', 'n/a')}, val {state_vat.get('val_MSE', 'n/a')})")
     print(f"Non-VAT model  : {no_vat_mse:.6f} (epoch {state_no_vat.get('epoch', 'n/a')}, val {state_no_vat.get('val_MSE', 'n/a')})")
-    print(f"Ensemble (avg) : {ensemble_mse:.6f}")
+    #print(f"Ensemble (avg) : {ensemble_mse:.6f}")
 
 
 if __name__ == '__main__':
