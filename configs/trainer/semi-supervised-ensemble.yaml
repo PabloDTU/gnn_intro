@@ -8,18 +8,33 @@ train:
   validation_interval: 10
 
 init:
+  _target_: trainer.SemiSupervisedEnsemble
+  supervised_criterion:
+    _target_: torch.nn.MSELoss
+    reduction: mean
+
   optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
     lr: 5e-4
     weight_decay: 1e-6
 
   scheduler:
+    _target_: schedulers.build_onecycle
+    _partial_: true
     max_lr: 5e-4
-    total_steps: 400
+    total_steps: ${trainer.train.total_epochs}
+    pct_start: 0.3
+    div_factor: 25
+    final_div_factor: 1e4
+  scheduler_step_on: epoch
 
+  # Existing regularization
   edge_drop_prob: 0.05
   feature_mask_prob: 0.05
   grad_clip_norm: 1.0
 
+  # VAT knobs
   use_vat: true
   unsup_weight: 2.0
   unsup_rampup_epochs: 30
