@@ -1,4 +1,5 @@
 from functools import partial
+import os
 
 import numpy as np
 import torch
@@ -263,7 +264,10 @@ class SemiSupervisedEnsemble:
         edge_drop_prob: float | None = None,
         feature_mask_prob: float | None = None,
         grad_clip_norm: float | None = None,
+        save_best_path: str | None = None,
     ):
+        # Track best validation metric for checkpointing
+        best_val = float("inf")
         for epoch in (pbar := tqdm(range(1, total_epochs + 1))):
             # Put models in training mode
             for model in self.models:
@@ -362,6 +366,18 @@ class SemiSupervisedEnsemble:
                 if self.scheduler_step_on == "val_MSE":
                     if hasattr(self.scheduler, "step"):
                         self.scheduler.step(val_metrics.get("val_MSE"))
+
+                # Save checkpoint if validation improved
+                if save_best_path is not None:
+                    cur = val_metrics.get("val_MSE")
+                    if cur is not None and cur < best_val:
+                        best_val = cur
+                        try:
+                            self.save_checkpoint(save_best_path, epoch=epoch, extra={"best_val_MSE": best_val})
+                            print(f"Saved best checkpoint to {save_best_path} (val_MSE={best_val:.6f})")
+                        except Exception:
+                            pass
+
                 pbar.set_postfix(summary_dict)
             else:
                 if self.scheduler_step_on == "epoch":
@@ -395,3 +411,85 @@ class SemiSupervisedEnsemble:
 
             # Log to WandB or custom logger
             self.logger.log_dict(summary_dict, step=epoch)
+
+    # ------------------------------------------------------------------
+    # Checkpointing helpers
+    # ------------------------------------------------------------------
+    def save_checkpoint(self, path: str, epoch: int | None = None, extra: dict | None = None):
+        """
+        Save a training checkpoint containing ensemble model weights, optimizer
+        and scheduler states, and optional metadata.
+
+        - `path`: destination file (e.g. `outputs/best.ckpt`)
+        - `epoch`: optional current epoch number
+        - `extra`: optional dict for arbitrary metadata (cfg, best_metric...)
+        """
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+        # Move y_stats to cpu if present so checkpoint is portable
+        y_stats_cpu = (None, None)
+        if self.y_stats is not None:
+            ym, ys = self.y_stats
+            y_stats_cpu = (
+                ym.detach().cpu() if (ym is not None and isinstance(ym, torch.Tensor)) else ym,
+                ys.detach().cpu() if (ys is not None and isinstance(ys, torch.Tensor)) else ys,
+            )
+
+        ckpt = {
+            "epoch": epoch,
+            "models": [m.state_dict() for m in self.models],
+            "optimizer": self.optimizer.state_dict() if hasattr(self.optimizer, "state_dict") else None,
+            "scheduler": self.scheduler.state_dict() if hasattr(self.scheduler, "state_dict") else None,
+            "y_stats": y_stats_cpu,
+            "meta": extra,
+        }
+
+        torch.save(ckpt, path)
+
+    def load_checkpoint(self, path: str, map_location: str | None = None, load_optimizer: bool = True, load_scheduler: bool = True):
+        """
+        Load checkpoint and restore model weights plus optional optimizer/scheduler states.
+
+        - `map_location`: torch.load map_location (defaults to self.device)
+        - `load_optimizer`, `load_scheduler`: whether to restore optimizer/scheduler
+
+        Returns the loaded checkpoint dict.
+        """
+        map_location = map_location or self.device
+        ckpt = torch.load(path, map_location=map_location)
+
+        # Load models (assumes same number/order of models)
+        model_states = ckpt.get("models", [])
+        if len(model_states) != len(self.models):
+            # best-effort: load what matches, warn user
+            for i, st in enumerate(model_states):
+                if i < len(self.models):
+                    try:
+                        self.models[i].load_state_dict(st)
+                    except Exception:
+                        pass
+        else:
+            for m, st in zip(self.models, model_states):
+                m.load_state_dict(st)
+
+        # Restore optimizer state if available and requested
+        if load_optimizer and ckpt.get("optimizer") is not None:
+            try:
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+            except Exception:
+                # incompatible optimizer state (e.g., different param groups)
+                pass
+
+        # Restore scheduler state if available and requested
+        if load_scheduler and ckpt.get("scheduler") is not None and hasattr(self.scheduler, "load_state_dict"):
+            try:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            except Exception:
+                pass
+
+        # Restore y_stats if present
+        y_stats = ckpt.get("y_stats")
+        if y_stats is not None:
+            self.y_stats = y_stats
+
+        return ckpt
