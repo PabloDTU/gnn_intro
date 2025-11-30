@@ -156,7 +156,7 @@ class SemiSupervisedEnsemble:
                 x_u_aug   = self.augment_graph(x_u)
 
                 # labelled
-                student_l = self.student(x_aug)
+                student_l = self.student(x) # CLEAN graph for supervised path
                 with torch.no_grad():
                     teacher_l = self.teacher(x)
 
