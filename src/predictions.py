@@ -190,7 +190,7 @@ def plot_molecules(model, batch, y_mean, y_std, device, title: str, n: int = 8, 
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate VAT vs non-VAT checkpoints on the QM9 test split')
-    parser.add_argument('--ckpt_vat', type=Path, default=Path('checkpoints/best_model_VAT.pt'), help='Path to VAT-trained checkpoint (best_model.pt)')
+    parser.add_argument('--ckpt_vat', type=Path, default=Path('checkpoints/best_model_VAT_v2.pt'), help='Path to VAT-trained checkpoint (best_model.pt)')
     parser.add_argument('--ckpt_no_vat', type=Path, default=Path('checkpoints/best_model_noVAT.pt'), help='Path to non-VAT checkpoint (best_model.pt)')
     parser.add_argument('--model_cfg', type=Path, default=Path('configs/model/edge_aware_gcn.yaml'), help='Model config YAML')
     parser.add_argument('--dataset_cfg', type=Path, default=Path('configs/dataset/qm9.yaml'), help='Dataset config YAML')
