@@ -12,7 +12,8 @@ init:
   supervised_criterion:
     _target_: torch.nn.MSELoss
   consistency_criterion:
-    _target_: torch.nn.MSELoss
+    _target_: torch.nn.SmoothL1Loss
+    beta: 0.2
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
