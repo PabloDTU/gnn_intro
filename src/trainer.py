@@ -321,6 +321,7 @@ class SemiSupervisedEnsemble:
 
                 ramp = self._unsup_rampup(epoch)
                 total_loss = supervised_loss + ramp * self.unsup_weight * vat_loss
+                print("Total loss:", total_loss.item(), " (Sup:", supervised_loss.item(), " VAT:", vat_loss.item(), " Ramp:", ramp, ")")
 
                 # Backprop on combined loss
                 total_loss.backward()
