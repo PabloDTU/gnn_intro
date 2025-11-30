@@ -23,7 +23,7 @@ class SemiSupervisedEnsemble:
         - train_dataloader()
         - val_dataloader()
         - test_dataloader()
-        - optionally unlabeled_dataloader()
+        - optionally unsupervised_train_dataloader()
         - optionally target_stats = (y_mean, y_std) for de-standardizing targets
     """
 
@@ -349,7 +349,7 @@ class SemiSupervisedEnsemble:
                     # --- NEW: save best checkpoint ---
                     if val_mse < self.best_val_mse:
                         self.best_val_mse = val_mse
-                        ckpt_path = os.path.join(self.checkpoint_dir, "best_model.pt")
+                        ckpt_path = os.path.join(self.checkpoint_dir, "best_model_VAT.pt")
 
                         # If you have an ensemble, you can save all models;
                         # here I save only the first one for simplicity.

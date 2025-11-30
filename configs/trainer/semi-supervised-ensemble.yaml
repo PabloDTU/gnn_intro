@@ -20,13 +20,12 @@ init:
     weight_decay: 0.0001
 
   scheduler:
-    _target_: schedulers.build_onecycle
+    _target_: schedulers.build_warmup_cosine
     _partial_: true
-    max_lr: 8e-4
-    total_steps: ${trainer.train.total_epochs}
-    pct_start: 0.1
-    div_factor: 10
-    final_div_factor: 1000
+    warmup_epochs: 10          # mets 5–10 selon ton goût
+    total_epochs: ${trainer.train.total_epochs}
+    warmup_start_factor: 0.1
+    eta_min: 1e-6
   scheduler_step_on: epoch
 
   # Existing regularization
@@ -36,8 +35,8 @@ init:
 
   # VAT knobs
   use_vat: true
-  unsup_weight: 1.5
-  unsup_rampup_epochs: 80
-  vat_eps: 0.025
-  vat_xi: 0.0005
-  vat_iters: 1
+  unsup_weight: 3
+  unsup_rampup_epochs: 50
+  vat_eps: 0.05
+  vat_xi: 0.001
+  vat_iters: 2
