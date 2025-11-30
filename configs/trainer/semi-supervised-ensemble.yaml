@@ -27,7 +27,7 @@ init:
     warmup_start_factor: 0.1
     eta_min: 1e-5
   ema_decay: 0.995
-  max_consistency_weight: 1.0 # Decreased to incourage supervised learning
+  max_consistency_weight: 0.5 # Decreased to incourage supervised learning
   rampup_epochs: 20
 
     
