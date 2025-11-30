@@ -105,17 +105,17 @@ def main():
     test_loader = dm.test_dataloader()
     y_mean, y_std = dm.target_stats
 
-    #model_vat, state_vat = load_model(args.ckpt_vat, args.model_cfg, device)
+    model_vat, state_vat = load_model(args.ckpt_vat, args.model_cfg, device)
     model_no_vat, state_no_vat = load_model(args.ckpt_no_vat, args.model_cfg, device)
 
-    #vat_mse = evaluate(model_vat, test_loader, y_mean, y_std, device)
+    vat_mse = evaluate(model_vat, test_loader, y_mean, y_std, device)
     no_vat_mse = evaluate(model_no_vat, test_loader, y_mean, y_std, device)
-    #ensemble_mse = evaluate_ensemble([model_vat, model_no_vat], test_loader, y_mean, y_std, device)
+    ensemble_mse = evaluate_ensemble([model_vat, model_no_vat], test_loader, y_mean, y_std, device)
 
     print('=== Test MSE ===')
-    #print(f"VAT model      : {vat_mse:.6f} (epoch {state_vat.get('epoch', 'n/a')}, val {state_vat.get('val_MSE', 'n/a')})")
+    print(f"VAT model      : {vat_mse:.6f} (epoch {state_vat.get('epoch', 'n/a')}, val {state_vat.get('val_MSE', 'n/a')})")
     print(f"Non-VAT model  : {no_vat_mse:.6f} (epoch {state_no_vat.get('epoch', 'n/a')}, val {state_no_vat.get('val_MSE', 'n/a')})")
-    #print(f"Ensemble (avg) : {ensemble_mse:.6f}")
+    print(f"Ensemble (avg) : {ensemble_mse:.6f}")
 
 
 if __name__ == '__main__':
