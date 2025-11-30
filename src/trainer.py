@@ -65,7 +65,7 @@ class SemiSupervisedEnsemble:
         return self.max_consistency_weight * float(np.exp(-5.0 * phase * phase))
     
     # Data augmentation functions
-    def augment_features(self, batch, drop_prob=0.02):
+    def augment_features(self, batch, drop_prob=0.01):
         x = batch.x
         mask = torch.rand_like(x) < drop_prob
         x_aug = x.clone()
@@ -75,7 +75,7 @@ class SemiSupervisedEnsemble:
         return batch_aug
 
 
-    def augment_edges(self, batch, drop_prob=0.01):
+    def augment_edges(self, batch, drop_prob=0.005):
         """Randomly drops edges (and matching edge_attr) with probability drop_prob."""
         # If not training or drop_prob is zero, skip
         if drop_prob <= 0.0 or not self.student.training:
@@ -101,8 +101,8 @@ class SemiSupervisedEnsemble:
     
     def augment_graph(self, batch):
         # Student sees noise, teacher sees clean input
-        batch_aug = self.augment_features(batch, drop_prob=0.02)
-        batch_aug = self.augment_edges(batch_aug, drop_prob=0.01)
+        batch_aug = self.augment_features(batch, drop_prob=0.01)
+        batch_aug = self.augment_edges(batch_aug, drop_prob=0.005)
         return batch_aug
     
 
@@ -175,8 +175,8 @@ class SemiSupervisedEnsemble:
                 consistency_loss_u = self.consistency_criterion(student_u, teacher_u.detach())
                 consistency_loss = consistency_loss_u
 
-                # Burn-in: disable consistency for first 20 epochs
-                if epoch < 20:
+                # Burn-in: disable consistency for first 40 epochs
+                if epoch < 40:
                     consistency_loss = consistency_loss_u.detach() * 0.0
 
                 # --- Total loss ---
