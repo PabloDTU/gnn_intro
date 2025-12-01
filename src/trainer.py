@@ -36,6 +36,7 @@ class SemiSupervisedEnsemble:
         models,
         logger,
         datamodule,
+        method: str | None = None,
         scheduler_step_on: str = "epoch",  # 'epoch' or 'val_MSE' (plateau)
 
         # ----- Regularization knobs -----
@@ -76,6 +77,30 @@ class SemiSupervisedEnsemble:
         self.edge_drop_prob_default = edge_drop_prob
         self.feature_mask_prob_default = feature_mask_prob
         self.grad_clip_norm_default = grad_clip_norm
+        self.method = method
+
+        # Resolve checkpoint directory: checkpoints/<method>/ for semi-supervised variants,
+        # and checkpoints/ root for supervised.
+        project_root = os.path.dirname(os.path.dirname(__file__))
+
+        # Infer a method name from flags if none was provided explicitly.
+        inferred_method = None
+        if method:
+            inferred_method = method
+        else:
+            if self.use_vat:
+                inferred_method = "VAT"
+            elif self.use_ncps:
+                inferred_method = "NCPS"
+            elif self.use_mean_teacher:
+                inferred_method = "MT"
+
+        method_dir = inferred_method
+        if method_dir and method_dir not in {"supervised"}:
+            self.checkpoint_dir = os.path.join(project_root, "checkpoints", method_dir)
+        else:
+            self.checkpoint_dir = os.path.join(project_root, "checkpoints")
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         # ----- VAT config -----
         self.use_vat = use_vat
@@ -135,8 +160,7 @@ class SemiSupervisedEnsemble:
         so checkpoints are saved in a fixed repo-level folder regardless
         of Hydra's per-run working directory.
         """
-        project_root = os.path.dirname(os.path.dirname(__file__))
-        ckpt_dir = os.path.join(project_root, "checkpoints")
+        ckpt_dir = self.checkpoint_dir
         os.makedirs(ckpt_dir, exist_ok=True)
 
         for idx, model in enumerate(self.models):
@@ -435,14 +459,25 @@ class SemiSupervisedEnsemble:
                             vat_loss = self._compute_vat_loss(x_u)
                         if self.use_mean_teacher:
                             mt_loss = self._compute_mean_teacher_loss(x_u)
+                
+                # We want a target ratio of unsupervised to supervised loss 
+                # of about 0.2 to avoid overwhelming the supervised signal.
+                target_ratio = 0.2
+                sup_val = supervised_loss.detach()
+                vat_val = vat_loss.detach()
+                # Evite div0
+                ratio = (vat_val / (sup_val + 1e-8)).item()
+                # Poids effectif pour approcher le ratio cible
+                eff_unsup_weight = min(self.unsup_weight, target_ratio / max(ratio, 1e-6))
 
                 ramp = self._unsup_rampup(epoch)
+                unsup_term = ramp * eff_unsup_weight * vat_loss
                 mt_ramp = self._unsup_rampup(epoch)  # reuse same schedule for mean-teacher
                 total_loss = (
                     supervised_loss
                     + self.ncps_weight * ncps_loss_unlabeled
                     + mt_ramp * self.mean_teacher_weight * mt_loss
-                    + ramp * self.unsup_weight * vat_loss
+                    + unsup_term
                 )
                 print(f"Epoch {epoch} | SupLoss: {supervised_loss.item():.4f} | "
                       f"VAT_Loss: {(ramp * self.unsup_weight * vat_loss).item():.4f}"
@@ -469,7 +504,7 @@ class SemiSupervisedEnsemble:
             summary_dict = {"supervised_loss": supervised_losses_logged}
             # Optional: log individual unsupervised components for debugging
             try:
-                summary_dict["vat_loss"] = float(vat_loss.item())
+                summary_dict["vat_loss"] = float(unsup_term.item())
                 summary_dict["mt_loss"] = float(mt_loss.item())
                 summary_dict["ncps_unlabeled"] = float(ncps_loss_unlabeled.item())
             except Exception:

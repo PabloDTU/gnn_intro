@@ -86,6 +86,7 @@ def main(cfg):
         logger=logger,
         datamodule=dm,
         device=device,
+        method=getattr(cfg.trainer, "method", None),
     )
 
     # Pull optional regularization params from config if present
