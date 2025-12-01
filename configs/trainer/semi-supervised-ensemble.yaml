@@ -16,17 +16,16 @@ init:
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 1e-3
+    lr: 7e-4
     weight_decay: 1e-4
 
   scheduler:
-    _target_: schedulers.build_onecycle
+    _target_: schedulers.build_warmup_cosine
     _partial_: true
-    max_lr: 1e-3
-    total_steps: ${trainer.train.total_epochs}
-    pct_start: 0.3
-    div_factor: 25
-    final_div_factor: 1e4
+    warmup_epochs: 10
+    total_epochs: ${trainer.train.total_epochs}
+    warmup_start_factor: 0.1
+    eta_min: 1e-6
   scheduler_step_on: epoch
 
   # Existing regularization
@@ -35,20 +34,18 @@ init:
   grad_clip_norm: 5.0
 
   # VAT knobs
-  use_vat: true
-  unsup_weight: 8.0
-  unsup_rampup_epochs: 50
-  vat_eps: 0.09
+  use_vat: false
+  unsup_weight: 1000
+  unsup_rampup_epochs: 5
+  vat_eps: 0.03
   vat_xi: 0.001
-  vat_iters: 2
+  vat_iters: 1
 
-  # Neighborhood-Consistent Pseudo-Labeling (N-CPL)
-  use_ncpl: false
-  ncpl_weight: 1.0
-  ncpl_k: 5
-  ncpl_alpha: 0.5
+  # Cross Pseudo Supervision (N-CPS)
+  use_ncps: false
+  ncps_weight: 0.1
 
   # Mean-teacher
   use_mean_teacher: false
-  mean_teacher_weight: 1.0
+  mean_teacher_weight: 0.1
   mean_teacher_ema_decay: 0.99

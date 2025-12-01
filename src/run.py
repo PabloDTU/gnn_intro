@@ -30,14 +30,28 @@ def main(cfg):
 
     dm = hydra.utils.instantiate(cfg.dataset.init)
 
-    model = hydra.utils.instantiate(cfg.model.init).to(device)
-    # Sanity: verify that instantiated class matches config target
-    try:
-        expected_target = cfg.model.init._target_
-        actual_target = f"{model.__class__.__module__}.{model.__class__.__name__}"
-        print(f"[INFO] Model expected: {expected_target} | actual: {actual_target}")
-    except Exception:
-        pass
+    # Build one or more model instances (ensemble) depending on config.
+    # For N-CPS we need at least two models; otherwise a single model is enough.
+    def _build_model():
+        m = hydra.utils.instantiate(cfg.model.init).to(device)
+        # Sanity: verify that instantiated class matches config target
+        try:
+            expected_target = cfg.model.init._target_
+            actual_target = f"{m.__class__.__module__}.{m.__class__.__name__}"
+            print(f"[INFO] Model expected: {expected_target} | actual: {actual_target}")
+        except Exception:
+            pass
+        return m
+
+    use_ncps = getattr(cfg.trainer.init, "use_ncps", False)
+    if use_ncps:
+        print("[INFO] N-CPS enabled: building 2-model ensemble")
+        model1 = _build_model()
+        model2 = _build_model()
+        models = [model1, model2]
+    else:
+        model = _build_model()
+        models = [model]
 
     # Optional debug instrumentation to verify which model runs and data shapes
     if getattr(cfg, "debug_mode", False):
@@ -64,8 +78,8 @@ def main(cfg):
             print(f"[DEBUG] Failed to sample a batch for inspection: {e}")
 
     if cfg.compile_model:
-        model = torch.compile(model)
-    models = [model]
+        # Compile all models in the ensemble if requested
+        models = [torch.compile(m) for m in models]
     trainer = hydra.utils.instantiate(
         cfg.trainer.init,
         models=models,

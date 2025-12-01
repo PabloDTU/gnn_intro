@@ -1,5 +1,6 @@
 from functools import partial
 from copy import deepcopy
+import os
 
 import numpy as np
 import torch
@@ -43,18 +44,16 @@ class SemiSupervisedEnsemble:
         grad_clip_norm: float = 0.0,
 
         # ----- VAT semi-supervised knobs -----
-        use_vat: bool = True,
+        use_vat: bool = False,
         unsup_weight: float = 1.0,
         unsup_rampup_epochs: int = 50,
         vat_eps: float = 2e-2,
         vat_xi: float = 1e-3,
         vat_iters: int = 1,
 
-        # ----- Neighborhood-Consistent Pseudo-Labeling (N-CPL) knobs -----
-        use_ncpl: bool = False,
-        ncpl_weight: float = 1.0,
-        ncpl_k: int = 5,
-        ncpl_alpha: float = 0.5,
+        # ----- Cross Pseudo Supervision (N-CPS) knobs -----
+        use_ncps: bool = False,
+        ncps_weight: float = 1.0,
 
         # ----- Mean-teacher knobs -----
         use_mean_teacher: bool = False,
@@ -86,11 +85,9 @@ class SemiSupervisedEnsemble:
         self.vat_xi = vat_xi
         self.vat_iters = vat_iters
 
-        # ----- N-CPL config -----
-        self.use_ncpl = use_ncpl
-        self.ncpl_weight = ncpl_weight
-        self.ncpl_k = ncpl_k
-        self.ncpl_alpha = ncpl_alpha
+        # ----- N-CPS config -----
+        self.use_ncps = use_ncps
+        self.ncps_weight = ncps_weight
 
         # ----- Mean-teacher config -----
         self.use_mean_teacher = use_mean_teacher
@@ -103,10 +100,10 @@ class SemiSupervisedEnsemble:
         self.val_dataloader = datamodule.val_dataloader()
         self.test_dataloader = datamodule.test_dataloader()
 
-        # Optional unlabeled dataloader for VAT
+        # Optional unlabeled dataloader for VAT / N-CPL / mean-teacher
         self.unlabeled_dataloader = (
-            datamodule.unlabeled_dataloader()
-            if hasattr(datamodule, "unlabeled_dataloader")
+            datamodule.unsupervised_train_dataloader()
+            if hasattr(datamodule, "unsupervised_train_dataloader")
             else None
         )
         self._unlabeled_iter = None
@@ -124,6 +121,31 @@ class SemiSupervisedEnsemble:
                 tm.eval()
         else:
             self.teacher_models = None
+
+        # Checkpoint tracking
+        self.best_val = float("inf")
+
+    # ------------------------------------------------------------------
+    # Helper: save checkpoints
+    # ------------------------------------------------------------------
+    def _save_checkpoint(self, epoch: int, is_best: bool = False):
+        """Save model checkpoints under ./checkpoints.
+
+        Uses the project root (two levels up from this file) as base,
+        so checkpoints are saved in a fixed repo-level folder regardless
+        of Hydra's per-run working directory.
+        """
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        ckpt_dir = os.path.join(project_root, "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
+
+        for idx, model in enumerate(self.models):
+            fname = f"model_{idx}_epoch={epoch}.pt"
+            torch.save(model.state_dict(), os.path.join(ckpt_dir, fname))
+
+            if is_best:
+                best_name = f"model_{idx}_best.pt"
+                torch.save(model.state_dict(), os.path.join(ckpt_dir, best_name))
 
     # ------------------------------------------------------------------
     # Helper: get (and cache) target mean/std from datamodule
@@ -204,43 +226,33 @@ class SemiSupervisedEnsemble:
                     p_t.data.mul_(decay).add_(p_s.data, alpha=1.0 - decay)
 
     # ------------------------------------------------------------------
-    # N-CPL loss on a batch of graph-level predictions
+    # N-CPS loss (Cross Pseudo Supervision) on unlabeled batch
     # ------------------------------------------------------------------
-    def _compute_ncpl_loss(self, preds: torch.Tensor) -> torch.Tensor:
-        """Neighborhood-consistent pseudo-labeling on batch predictions.
+    def _compute_ncps_loss(self, preds_list: list[torch.Tensor]) -> torch.Tensor:
+        """Cross Pseudo Supervision between models on unlabeled data.
 
-        preds: [B, 1] tensor of graph-level predictions (ensemble-averaged).
-        For each sample i, build pseudo-label from k nearest neighbors in
-        prediction space and penalize deviation from that pseudo label.
+        preds_list: list of [B, 1] tensors, one per model.
+        For two models f1, f2 we use:
+            ||f1(x_u) - sg(f2(x_u))||^2 + ||f2(x_u) - sg(f1(x_u))||^2.
+        For >2 models, we sum CPS over all ordered pairs.
         """
-        if not self.use_ncpl:
+        if not self.use_ncps:
             return torch.tensor(0.0, device=self.device)
 
-        if preds.dim() == 1:
-            preds = preds.unsqueeze(-1)
-
-        B = preds.size(0)
-        if B <= 1:
+        if len(preds_list) < 2:
             return torch.tensor(0.0, device=self.device)
 
-        # Pairwise distances in prediction space
-        with torch.no_grad():
-            diff = preds.unsqueeze(0) - preds.unsqueeze(1)  # [B, B, 1]
-            dist = (diff ** 2).sum(-1)  # [B, B]
-            # Exclude self by setting large distance on diagonal
-            diag_idx = torch.arange(B, device=self.device)
-            dist[diag_idx, diag_idx] = float("inf")
-
-            k = min(self.ncpl_k, B - 1)
-            knn_idx = torch.topk(dist, k=k, largest=False).indices  # [B, k]
-
-        neighbor_preds = preds[knn_idx]  # [B, k, 1]
-        neighbor_mean = neighbor_preds.mean(dim=1)  # [B, 1]
-
-        alpha = self.ncpl_alpha
-        pseudo = alpha * preds + (1.0 - alpha) * neighbor_mean
-        ncpl_loss = ((preds - pseudo.detach()) ** 2).mean()
-        return ncpl_loss
+        loss = torch.tensor(0.0, device=self.device)
+        n = len(preds_list)
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                # student i matches teacher j (stop-grad on teacher)
+                loss = loss + ((preds_list[i] - preds_list[j].detach()) ** 2).mean()
+        # average over number of ordered pairs
+        loss = loss / float(n * (n - 1))
+        return loss
 
     # ------------------------------------------------------------------
     # Mean-teacher consistency loss on an unlabeled batch
@@ -404,29 +416,32 @@ class SemiSupervisedEnsemble:
                     supervised_loss.detach().item() / len(self.models)
                 )
 
-                # Ensemble-averaged predictions for consistency losses
-                with torch.no_grad():
-                    preds_ensemble = torch.stack([m(x) for m in self.models]).mean(0)
-
-                # N-CPL loss on labeled batch
-                ncpl_loss = self._compute_ncpl_loss(preds_ensemble)
+                # (Optional) CPS on labeled data is not used; supervised loss
+                # already enforces correctness on labeled targets.
 
                 # ------------------- VAT unsupervised loss -------------------
                 vat_loss = torch.tensor(0.0, device=self.device)
                 mt_loss = torch.tensor(0.0, device=self.device)
+                ncps_loss_unlabeled = torch.tensor(0.0, device=self.device)
                 if self.unlabeled_dataloader is not None:
                     x_u = self._get_unlabeled_batch()
                     if x_u is not None:
+                        # N-CPS loss on unlabeled data between models
+                        if self.use_ncps:
+                            preds_u_list = [m(x_u) for m in self.models]
+                            ncps_loss_unlabeled = self._compute_ncps_loss(preds_u_list)
+
                         if self.use_vat:
                             vat_loss = self._compute_vat_loss(x_u)
                         if self.use_mean_teacher:
                             mt_loss = self._compute_mean_teacher_loss(x_u)
 
                 ramp = self._unsup_rampup(epoch)
+                mt_ramp = self._unsup_rampup(epoch)  # reuse same schedule for mean-teacher
                 total_loss = (
                     supervised_loss
-                    + self.ncpl_weight * ncpl_loss
-                    + self.mean_teacher_weight * mt_loss
+                    + self.ncps_weight * ncps_loss_unlabeled
+                    + mt_ramp * self.mean_teacher_weight * mt_loss
                     + ramp * self.unsup_weight * vat_loss
                 )
 
@@ -449,6 +464,13 @@ class SemiSupervisedEnsemble:
             # ------------------- End epoch: logging + scheduler -------------------
             supervised_losses_logged = float(np.mean(supervised_losses_logged))
             summary_dict = {"supervised_loss": supervised_losses_logged}
+            # Optional: log individual unsupervised components for debugging
+            try:
+                summary_dict["vat_loss"] = float(vat_loss.item())
+                summary_dict["mt_loss"] = float(mt_loss.item())
+                summary_dict["ncps_unlabeled"] = float(ncps_loss_unlabeled.item())
+            except Exception:
+                pass
 
             # Validation + scheduler step
             if epoch % validation_interval == 0 or epoch == total_epochs:
@@ -458,6 +480,17 @@ class SemiSupervisedEnsemble:
                 if self.scheduler_step_on == "val_MSE":
                     if hasattr(self.scheduler, "step"):
                         self.scheduler.step(val_metrics.get("val_MSE"))
+
+                # Checkpointing + track best val_MSE
+                current_val = val_metrics.get("val_MSE", None)
+                if current_val is not None:
+                    if current_val < self.best_val:
+                        self.best_val = current_val
+                        self._save_checkpoint(epoch=epoch, is_best=True)
+
+                # Expose best val to logging
+                if self.best_val < float("inf"):
+                    summary_dict["best_val_MSE"] = self.best_val
                 pbar.set_postfix(summary_dict)
             else:
                 if self.scheduler_step_on == "epoch":
@@ -474,10 +507,16 @@ class SemiSupervisedEnsemble:
             try:
                 lr_print = summary_dict.get("lr", -1.0)
                 if "val_MSE" in summary_dict:
+                    best_val_str = (
+                        f" | BestValMSE={summary_dict['best_val_MSE']:.6f}"
+                        if "best_val_MSE" in summary_dict
+                        else ""
+                    )
                     print(
                         f"Epoch {epoch}/{total_epochs} | "
                         f"SupLoss={summary_dict['supervised_loss']:.6f} | "
-                        f"ValMSE={summary_dict['val_MSE']:.6f} | "
+                        f"ValMSE={summary_dict['val_MSE']:.6f}"  # current
+                        f"{best_val_str} | "
                         f"LR={lr_print:.2e}"
                     )
                 else:
