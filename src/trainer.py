@@ -321,7 +321,7 @@ class SemiSupervisedEnsemble:
 
                 ramp = self._unsup_rampup(epoch)
                 total_loss = supervised_loss + ramp * self.unsup_weight * vat_loss
-                print("Total loss:", total_loss.item(), " (Sup:", supervised_loss.item(), " VAT:", vat_loss.item(), " Ramp:", ramp, ")")
+                print("Total loss:", total_loss.item(), " (Sup:", supervised_loss.item(), " Unsup:", (ramp * self.unsup_weight * vat_loss).item(),")")
 
                 # Backprop on combined loss
                 total_loss.backward()
@@ -350,7 +350,7 @@ class SemiSupervisedEnsemble:
                     # --- NEW: save best checkpoint ---
                     if val_mse < self.best_val_mse:
                         self.best_val_mse = val_mse
-                        ckpt_path = os.path.join(self.checkpoint_dir, "best_model_VAT.pt")
+                        ckpt_path = os.path.join(self.checkpoint_dir, "best_model_noVAT.pt")
 
                         # If you have an ensemble, you can save all models;
                         # here I save only the first one for simplicity.

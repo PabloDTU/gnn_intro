@@ -13,7 +13,7 @@ init:
   batch_size_inference: 2048
   num_workers: 4
   #splits: [10, 109990, 10000, 10831] # this is just to compare performance to Mikkel's code
-  splits: [0.6, 0.2, 0.1, 0.1] # DEFAULT OPTION: 80% train, 10% validation, 10% test. Of the training data, 90% is for unlabeled and 10% for labeled.
+  splits: [0.72, 0.08, 0.1, 0.1] # DEFAULT OPTION: 80% train, 10% validation, 10% test. Of the training data, 90% is for unlabeled and 10% for labeled.
   seed: 0
   subset_size: null
   
