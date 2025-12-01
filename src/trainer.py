@@ -65,7 +65,7 @@ class SemiSupervisedEnsemble:
         return self.max_consistency_weight * float(np.exp(-5.0 * phase * phase))
     
     # Data augmentation functions
-    def augment_features(self, batch, drop_prob=0.01):
+    def augment_features(self, batch, drop_prob=0.005):
         x = batch.x
         mask = torch.rand_like(x) < drop_prob
         x_aug = x.clone()
@@ -75,7 +75,7 @@ class SemiSupervisedEnsemble:
         return batch_aug
 
 
-    def augment_edges(self, batch, drop_prob=0.005):
+    def augment_edges(self, batch, drop_prob=0.00):
         """Randomly drops edges (and matching edge_attr) with probability drop_prob."""
         # If not training or drop_prob is zero, skip
         if drop_prob <= 0.0 or not self.student.training:
@@ -101,8 +101,8 @@ class SemiSupervisedEnsemble:
     
     def augment_graph(self, batch):
         # Student sees noise, teacher sees clean input
-        batch_aug = self.augment_features(batch, drop_prob=0.01)
-        batch_aug = self.augment_edges(batch_aug, drop_prob=0.005)
+        batch_aug = self.augment_features(batch, drop_prob=0.005)
+        batch_aug = self.augment_edges(batch_aug, drop_prob=0.00)
         return batch_aug
     
 
@@ -113,7 +113,8 @@ class SemiSupervisedEnsemble:
         with torch.no_grad():
             for x, targets in self.val_dataloader:
                 x, targets = x.to(self.device), targets.to(self.device)
-                preds = self.teacher(x)
+                #preds = self.teacher(x)
+                preds = self.student(x) # validate student performance
                 val_loss = torch.nn.functional.mse_loss(preds, targets)
                 val_losses.append(val_loss.item())
 
@@ -151,8 +152,8 @@ class SemiSupervisedEnsemble:
                 # --- Forward passes for labelled & unlabelled ---
                 self.optimizer.zero_grad()
 
-                # Apply augmentations to input for the student ONLY
-                x_aug     = self.augment_graph(x)
+                # Apply augmentations to input for the unlabeled student ONLY
+                #x_aug     = self.augment_graph(x)
                 x_u_aug   = self.augment_graph(x_u)
 
                 # labelled
@@ -176,7 +177,7 @@ class SemiSupervisedEnsemble:
                 consistency_loss = consistency_loss_u
 
                 # Burn-in: disable consistency for first 40 epochs
-                if epoch < 40:
+                if epoch < self.rampup_epochs:
                     consistency_loss = consistency_loss_u.detach() * 0.0
 
                 # --- Total loss ---

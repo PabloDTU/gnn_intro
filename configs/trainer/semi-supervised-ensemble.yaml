@@ -17,17 +17,15 @@ init:
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 0.001
-    weight_decay: 0.01
+    lr: 7e-4
+    weight_decay: 0.0001
   scheduler:
     _target_: schedulers.build_warmup_cosine
     _partial_: true
     warmup_epochs: 10
     total_epochs:  ${trainer.train.total_epochs}
     warmup_start_factor: 0.1
-    eta_min: 1e-5
-  ema_decay: 0.995
-  max_consistency_weight: 0.5 # Decreased to incourage supervised learning
-  rampup_epochs: 20
-
-    
+    eta_min: 1e-6
+  ema_decay: 0.98
+  max_consistency_weight: 0.1 # Decreased to incourage supervised learning
+  rampup_epochs: 100
