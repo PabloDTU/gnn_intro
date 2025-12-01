@@ -36,8 +36,8 @@ init:
   # VAT knobs
   use_vat: true
   unsup_weight: 30
-  unsup_rampup_epochs: 1
-  vat_eps: 0.05
+  unsup_rampup_epochs: 5
+  vat_eps: 0.1
   vat_xi: 0.001
   vat_iters: 2
 
