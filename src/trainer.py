@@ -444,6 +444,9 @@ class SemiSupervisedEnsemble:
                     + mt_ramp * self.mean_teacher_weight * mt_loss
                     + ramp * self.unsup_weight * vat_loss
                 )
+                print(f"Epoch {epoch} | SupLoss: {supervised_loss.item():.4f} | "
+                      f"VAT_Loss: {(ramp * self.unsup_weight * vat_loss).item():.4f}"
+                )   
 
                 # Backprop on combined loss
                 total_loss.backward()

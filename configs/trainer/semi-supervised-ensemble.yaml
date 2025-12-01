@@ -34,12 +34,12 @@ init:
   grad_clip_norm: 5.0
 
   # VAT knobs
-  use_vat: false
-  unsup_weight: 1000
-  unsup_rampup_epochs: 5
-  vat_eps: 0.03
+  use_vat: true
+  unsup_weight: 30
+  unsup_rampup_epochs: 1
+  vat_eps: 0.05
   vat_xi: 0.001
-  vat_iters: 1
+  vat_iters: 2
 
   # Cross Pseudo Supervision (N-CPS)
   use_ncps: false
