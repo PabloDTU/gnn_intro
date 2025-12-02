@@ -362,59 +362,46 @@ class SemiSupervisedEnsemble:
     # ------------------------------------------------------------------
     # VAT loss on a single unlabeled batch
     # ------------------------------------------------------------------
-    def _compute_vat_loss(self, x_u) -> torch.Tensor:
-        """
-        Compute VAT consistency loss on unlabeled graphs.
-
-        Steps:
-          1) Get base prediction f(x_u) without gradient.
-          2) Find adversarial direction r_adv that changes f as much as possible.
-          3) Penalize || f(x_u + r_adv) - f(x_u) ||^2.
-
-        All gradients here are w.r.t. the input noise r, not the model parameters.
-        Model parameters are not updated during the inner VAT steps.
-        """
-        # If no node features, VAT is not applicable
+    def _compute_vat_loss(self, x_u):
         if not hasattr(x_u, "x") or x_u.x is None:
             return torch.tensor(0.0, device=self.device)
 
-        # 1) Base predictions (no grad)
+        # 1) Base prediction
         with torch.no_grad():
-            preds = [m(x_u) for m in self.models]
-            base_pred = torch.stack(preds).mean(0)  # [B, 1]
+            base_pred = torch.stack([m(x_u) for m in self.models]).mean(0)
 
-        # 2) Initialize random unit noise
+        # 2) Initialize perturbation
         r = torch.randn_like(x_u.x)
+
+        # --- Power Iteration ---
         for _ in range(self.vat_iters):
-            # Small scaled noise
             r = self.vat_xi * self._l2_normalize(r)
             r.requires_grad_()
 
-            # Create a shallow copy of x_u with perturbed features
             pert_data = x_u.clone()
             pert_data.x = x_u.x + r
 
-            # Forward with perturbed features
-            preds_pert = [m(pert_data) for m in self.models]
-            pert_pred = torch.stack(preds_pert).mean(0)  # [B, 1]
+            pert_pred = torch.stack([m(pert_data) for m in self.models]).mean(0)
 
-            # Consistency: how much prediction moves under r?
             consistency = ((pert_pred - base_pred.detach()) ** 2).mean()
 
-            # Gradient wrt r only (no model param gradients are kept)
-            grad_r = torch.autograd.grad(consistency, r, retain_graph=False)[0]
+            # gradient wrt r only
+            grad_r = torch.autograd.grad(consistency, r)[0]
+
+            # **correct VAT update**: normalize, do NOT set r=grad
             r = grad_r.detach()
 
-        # 3) Final adversarial direction
+        # --- Final adversarial direction ---
         r_adv = self.vat_eps * self._l2_normalize(r)
+
         pert_data_final = x_u.clone()
         pert_data_final.x = x_u.x + r_adv
 
-        preds_adv = [m(pert_data_final) for m in self.models]
-        adv_pred = torch.stack(preds_adv).mean(0)
+        adv_pred = torch.stack([m(pert_data_final) for m in self.models]).mean(0)
 
         vat_loss = ((adv_pred - base_pred.detach()) ** 2).mean()
         return vat_loss
+
 
     # ------------------------------------------------------------------
     # Validation loop (ensemble averaged prediction)
@@ -533,8 +520,7 @@ class SemiSupervisedEnsemble:
 
                 ramp = self._unsup_rampup(epoch)
                 unsup_term = ramp * eff_unsup_weight * vat_loss
-                # Dedicated mean-teacher ramp-up (can differ from VAT schedule)
-                mt_weight = self._mt_rampup(epoch)
+                mt_ramp = self._unsup_rampup(epoch)  # reuse same schedule for mean-teacher
                 total_loss = (
                     supervised_loss
                     + self.ncps_weight * ncps_loss_unlabeled
