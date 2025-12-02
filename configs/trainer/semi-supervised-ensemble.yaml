@@ -46,6 +46,7 @@ init:
   ncps_weight: 0.1
 
   # Mean-teacher
-  use_mean_teacher: false
-  mean_teacher_weight: 0.1
-  mean_teacher_ema_decay: 0.99
+  use_mean_teacher: true
+  mean_teacher_weight: 0.01
+  mean_teacher_ema_decay: 0.995
+  mt_rampup_epochs: 120          # ramp-up schedule for MT weight
