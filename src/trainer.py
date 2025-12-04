@@ -85,29 +85,6 @@ class SemiSupervisedEnsemble:
         self.grad_clip_norm_default = grad_clip_norm
         self.method = method
 
-        # Resolve checkpoint directory: checkpoints/<method>/ for semi-supervised variants,
-        # and checkpoints/ root for supervised.
-        project_root = os.path.dirname(os.path.dirname(__file__))
-
-        # Infer a method name from flags if none was provided explicitly.
-        inferred_method = None
-        if method:
-            inferred_method = method
-        else:
-            if self.use_vat:
-                inferred_method = "VAT"
-            elif self.use_ncps:
-                inferred_method = "NCPS"
-            elif self.use_mean_teacher:
-                inferred_method = "MT"
-
-        method_dir = inferred_method
-        if method_dir and method_dir not in {"supervised"}:
-            self.checkpoint_dir = os.path.join(project_root, "checkpoints", method_dir)
-        else:
-            self.checkpoint_dir = os.path.join(project_root, "checkpoints")
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
-
         # ----- VAT config -----
         self.use_vat = use_vat
         self.unsup_weight = unsup_weight
@@ -129,6 +106,26 @@ class SemiSupervisedEnsemble:
         self.mean_teacher_ema_decay = mean_teacher_ema_decay
         # if not provided, reuse VAT ramp-up schedule
         self.mt_rampup_epochs = mt_rampup_epochs if mt_rampup_epochs is not None else self.unsup_rampup_epochs
+
+        # Resolve checkpoint directory: checkpoints/<method>/ for semi-supervised variants,
+        # and checkpoints/ root for supervised.
+        project_root = os.path.dirname(os.path.dirname(__file__))
+
+        # Infer a method name from flags if none was provided explicitly.
+        inferred_method = None
+        if self.use_vat:
+            inferred_method = "VAT"
+        elif self.use_ncps:
+            inferred_method = "NCPS"
+        elif self.use_mean_teacher:
+            inferred_method = "MT"
+
+        method_dir = inferred_method
+        if method_dir and method_dir not in {"supervised"}:
+            self.checkpoint_dir = os.path.join(project_root, "checkpoints", method_dir)
+        else:
+            self.checkpoint_dir = os.path.join(project_root, "checkpoints")
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         # ----- Dataloaders -----
         self.datamodule = datamodule
@@ -160,7 +157,7 @@ class SemiSupervisedEnsemble:
 
         # Checkpoint tracking
         self.best_val = float("inf")
-        self.best_ckpt_path = os.path.join(self.checkpoint_dir, "best.ckpt")
+        self.best_ckpt_path = os.path.join(self.checkpoint_dir, "best_VAT.ckpt")
 
     # ------------------------------------------------------------------
     # Helper: save checkpoints (full state)
