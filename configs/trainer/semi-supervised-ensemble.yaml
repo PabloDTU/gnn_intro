@@ -33,7 +33,7 @@ init:
   feature_mask_prob: 0.05
   grad_clip_norm: 5.0
 
-  # VAT knobs
+  # VAT varaibles
   use_vat: false
   unsup_weight: 0.5
   unsup_rampup_epochs: 50
