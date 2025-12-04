@@ -5,6 +5,7 @@ import os
 import numpy as np
 import torch
 from tqdm import tqdm
+from omegaconf import ListConfig
 
 from regularizers import apply_edge_dropout, apply_feature_mask
 
@@ -63,6 +64,8 @@ class SemiSupervisedEnsemble:
         use_mean_teacher: bool = False,
         mean_teacher_weight: float = 1.0,
         mean_teacher_ema_decay: float = 0.99,
+        # MT-specific schedule (can differ from VAT)
+        mt_rampup_epochs: int | None = None,
     ):
         self.device = device
         self.models = models
@@ -124,6 +127,8 @@ class SemiSupervisedEnsemble:
         self.use_mean_teacher = use_mean_teacher
         self.mean_teacher_weight = mean_teacher_weight
         self.mean_teacher_ema_decay = mean_teacher_ema_decay
+        # if not provided, reuse VAT ramp-up schedule
+        self.mt_rampup_epochs = mt_rampup_epochs if mt_rampup_epochs is not None else self.unsup_rampup_epochs
 
         # ----- Dataloaders -----
         self.datamodule = datamodule
@@ -312,10 +317,60 @@ class SemiSupervisedEnsemble:
         if not self.use_mean_teacher or self.teacher_models is None:
             return
         decay = self.mean_teacher_ema_decay
+        # Hydra multirun can wrap this in a ListConfig; resolve to float
+        if isinstance(decay, ListConfig):
+            if len(decay) == 0:
+                decay = 0.0
+            else:
+                decay = float(decay[0])
         for student, teacher in zip(self.models, self.teacher_models):
             with torch.no_grad():
                 for p_s, p_t in zip(student.parameters(), teacher.parameters()):
                     p_t.data.mul_(decay).add_(p_s.data, alpha=1.0 - decay)
+
+    # ------------------------------------------------------------------
+    # Helper: MT-specific graph augmentation for student (unlabeled data)
+    # ------------------------------------------------------------------
+    def _mt_augment_graph(self, batch):
+        """Apply light noise to unlabeled graphs for the student only.
+
+        Teacher will see the clean batch; student will see this augmented one.
+        Reuses the same augmentation primitives as for supervised training.
+        """
+        if self.edge_drop_prob_default and self.edge_drop_prob_default > 0.0:
+            batch = apply_edge_dropout(batch, float(self.edge_drop_prob_default))
+        if self.feature_mask_prob_default and self.feature_mask_prob_default > 0.0:
+            batch = apply_feature_mask(batch, float(self.feature_mask_prob_default))
+        return batch
+
+    # ------------------------------------------------------------------
+    # Helper: MT-specific ramp-up for consistency weight
+    # ------------------------------------------------------------------
+    def _mt_rampup(self, epoch: int) -> float:
+        """Exponential ramp-up for mean-teacher weight, similar to VAT.
+
+        If mt_rampup_epochs <= 0, returns mean_teacher_weight directly.
+        """
+        ramp_epochs = self.mt_rampup_epochs
+        mt_weight = self.mean_teacher_weight
+
+        # Hydra multirun can pass ListConfig; resolve to scalars
+        if isinstance(ramp_epochs, ListConfig):
+            if len(ramp_epochs) == 0:
+                ramp_epochs = 0
+            else:
+                ramp_epochs = int(float(ramp_epochs[0]))
+        if isinstance(mt_weight, ListConfig):
+            if len(mt_weight) == 0:
+                mt_weight = 0.0
+            else:
+                mt_weight = float(mt_weight[0])
+
+        if ramp_epochs is None or ramp_epochs <= 0:
+            return float(mt_weight)
+
+        t = min(epoch / float(ramp_epochs), 1.0)
+        return float(mt_weight) * float(np.exp(-5.0 * (1.0 - t) ** 2))
 
     # ------------------------------------------------------------------
     # N-CPS loss (Cross Pseudo Supervision) on unlabeled batch
@@ -357,11 +412,17 @@ class SemiSupervisedEnsemble:
         if not self.use_mean_teacher or self.teacher_models is None:
             return torch.tensor(0.0, device=self.device)
 
+        # Teacher sees clean unlabeled graphs
+        x_u_teacher = x_u
+
+        # Student sees a slightly noised version of the same graphs
+        x_u_student = self._mt_augment_graph(x_u.clone())
+
         with torch.no_grad():
-            teacher_preds = [tm(x_u) for tm in self.teacher_models]
+            teacher_preds = [tm(x_u_teacher) for tm in self.teacher_models]
             teacher_mean = torch.stack(teacher_preds).mean(0)
 
-        student_preds = [m(x_u) for m in self.models]
+        student_preds = [m(x_u_student) for m in self.models]
         student_mean = torch.stack(student_preds).mean(0)
 
         return ((student_mean - teacher_mean) ** 2).mean()
