@@ -31,15 +31,18 @@ init:
   # Existing regularization
   edge_drop_prob: 0.05
   feature_mask_prob: 0.05
-  grad_clip_norm: 5.0
+  grad_clip_norm: 1.0
 
   # VAT knobs
   use_vat: true
-  unsup_weight: 30
-  unsup_rampup_epochs: 1
-  vat_eps: 0.1
+  unsup_weight: 0.5
+  unsup_rampup_epochs: 50
+  vat_start_epoch: 10
+  vat_eps: 0.03
   vat_xi: 0.001
-  vat_iters: 2
+  unsup_max_ratio: 0.3
+  vat_iters: 1
+  unsup_every_k_steps: 5
 
   # Cross Pseudo Supervision (N-CPS)
   use_ncps: false

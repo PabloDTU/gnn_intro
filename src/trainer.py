@@ -48,9 +48,12 @@ class SemiSupervisedEnsemble:
         use_vat: bool = False,
         unsup_weight: float = 1.0,
         unsup_rampup_epochs: int = 50,
+        vat_start_epoch: int = 0,
         vat_eps: float = 2e-2,
         vat_xi: float = 1e-3,
+        unsup_max_ratio: float = 0.2,
         vat_iters: int = 1,
+        unsup_every_k_steps: int = 1,
 
         # ----- Cross Pseudo Supervision (N-CPS) knobs -----
         use_ncps: bool = False,
@@ -106,9 +109,12 @@ class SemiSupervisedEnsemble:
         self.use_vat = use_vat
         self.unsup_weight = unsup_weight
         self.unsup_rampup_epochs = unsup_rampup_epochs
+        self.vat_start_epoch = vat_start_epoch
         self.vat_eps = vat_eps
         self.vat_xi = vat_xi
+        self.unsup_max_ratio = unsup_max_ratio
         self.vat_iters = vat_iters
+        self.unsup_every_k_steps = unsup_every_k_steps
 
         # ----- N-CPS config -----
         self.use_ncps = use_ncps
@@ -149,27 +155,89 @@ class SemiSupervisedEnsemble:
 
         # Checkpoint tracking
         self.best_val = float("inf")
+        self.best_ckpt_path = os.path.join(self.checkpoint_dir, "best.ckpt")
 
     # ------------------------------------------------------------------
-    # Helper: save checkpoints
+    # Helper: save checkpoints (full state)
     # ------------------------------------------------------------------
-    def _save_checkpoint(self, epoch: int, is_best: bool = False):
-        """Save model checkpoints under ./checkpoints.
-
-        Uses the project root (two levels up from this file) as base,
-        so checkpoints are saved in a fixed repo-level folder regardless
-        of Hydra's per-run working directory.
+    def save_checkpoint(self, path: str, epoch: int | None = None, extra: dict | None = None):
         """
-        ckpt_dir = self.checkpoint_dir
-        os.makedirs(ckpt_dir, exist_ok=True)
+        Save a training checkpoint containing ensemble model weights, optimizer
+        and scheduler states, and optional metadata.
 
-        for idx, model in enumerate(self.models):
-            fname = f"model_{idx}_epoch={epoch}.pt"
-            torch.save(model.state_dict(), os.path.join(ckpt_dir, fname))
+        - `path`: destination file (e.g. `outputs/best.ckpt`)
+        - `epoch`: optional current epoch number
+        - `extra`: optional dict for arbitrary metadata (cfg, best_metric...)
+        """
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
-            if is_best:
-                best_name = f"model_{idx}_best.pt"
-                torch.save(model.state_dict(), os.path.join(ckpt_dir, best_name))
+        # Move y_stats to cpu if present so checkpoint is portable
+        y_stats_cpu = (None, None)
+        if self.y_stats is not None:
+            ym, ys = self.y_stats
+            y_stats_cpu = (
+                ym.detach().cpu() if (ym is not None and isinstance(ym, torch.Tensor)) else ym,
+                ys.detach().cpu() if (ys is not None and isinstance(ys, torch.Tensor)) else ys,
+            )
+
+        ckpt = {
+            "epoch": epoch,
+            "models": [m.state_dict() for m in self.models],
+            "optimizer": self.optimizer.state_dict() if hasattr(self.optimizer, "state_dict") else None,
+            "scheduler": self.scheduler.state_dict() if hasattr(self.scheduler, "state_dict") else None,
+            "y_stats": y_stats_cpu,
+            "meta": extra,
+        }
+
+        torch.save(ckpt, path)
+
+    def load_checkpoint(self, path: str, map_location: str | None = None, load_optimizer: bool = True, load_scheduler: bool = True):
+        """
+        Load checkpoint and restore model weights plus optional optimizer/scheduler states.
+
+        - `map_location`: torch.load map_location (defaults to self.device)
+        - `load_optimizer`, `load_scheduler`: whether to restore optimizer/scheduler
+
+        Returns the loaded checkpoint dict.
+        """
+        map_location = map_location or self.device
+        ckpt = torch.load(path, map_location=map_location)
+
+        # Load models (assumes same number/order of models)
+        model_states = ckpt.get("models", [])
+        if len(model_states) != len(self.models):
+            # best-effort: load what matches, warn user
+            for i, st in enumerate(model_states):
+                if i < len(self.models):
+                    try:
+                        self.models[i].load_state_dict(st)
+                    except Exception:
+                        pass
+        else:
+            for m, st in zip(self.models, model_states):
+                m.load_state_dict(st)
+
+        # Restore optimizer state if available and requested
+        if load_optimizer and ckpt.get("optimizer") is not None:
+            try:
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+            except Exception:
+                # incompatible optimizer state (e.g., different param groups)
+                pass
+
+        # Restore scheduler state if available and requested
+        if load_scheduler and ckpt.get("scheduler") is not None and hasattr(self.scheduler, "load_state_dict"):
+            try:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            except Exception:
+                pass
+
+        # Restore y_stats if present
+        y_stats = ckpt.get("y_stats")
+        if y_stats is not None:
+            self.y_stats = y_stats
+
+        return ckpt
 
     # ------------------------------------------------------------------
     # Helper: get (and cache) target mean/std from datamodule
@@ -301,46 +369,57 @@ class SemiSupervisedEnsemble:
     # ------------------------------------------------------------------
     # VAT loss on a single unlabeled batch
     # ------------------------------------------------------------------
-    def _compute_vat_loss(self, x_u):
+    def _compute_vat_loss(self, x_u) -> torch.Tensor:
+        """
+        VAT computed on node features x_u.x.
+
+        Important:
+        - Models run in eval mode during VAT to avoid corrupting BN / Dropout stats.
+        - Gradients are taken only w.r.t. r (perturbation), not params.
+        """
+        if not self.use_vat:
+            return torch.tensor(0.0, device=self.device)
         if not hasattr(x_u, "x") or x_u.x is None:
             return torch.tensor(0.0, device=self.device)
 
-        # 1) Base prediction
-        with torch.no_grad():
-            base_pred = torch.stack([m(x_u) for m in self.models]).mean(0)
+        # Save training/eval state
+        prev_train_states = [m.training for m in self.models]
+        for m in self.models:
+            m.eval()
 
-        # 2) Initialize perturbation
-        r = torch.randn_like(x_u.x)
+        try:
+            with torch.no_grad():
+                base_pred = torch.stack([m(x_u) for m in self.models]).mean(0)
 
-        # --- Power Iteration ---
-        for _ in range(self.vat_iters):
-            r = self.vat_xi * self._l2_normalize(r)
-            r.requires_grad_()
+            r = torch.randn_like(x_u.x)
 
-            pert_data = x_u.clone()
-            pert_data.x = x_u.x + r
+            for _ in range(self.vat_iters):
+                r = self.vat_xi * self._l2_normalize(r)
+                r.requires_grad_()
 
-            pert_pred = torch.stack([m(pert_data) for m in self.models]).mean(0)
+                pert_data = x_u.clone()
+                pert_data.x = x_u.x + r
 
-            consistency = ((pert_pred - base_pred.detach()) ** 2).mean()
+                pert_pred = torch.stack([m(pert_data) for m in self.models]).mean(0)
+                consistency = ((pert_pred - base_pred.detach()) ** 2).mean()
 
-            # gradient wrt r only
-            grad_r = torch.autograd.grad(consistency, r)[0]
+                grad_r = torch.autograd.grad(consistency, r, retain_graph=False, create_graph=False)[0]
+                r = grad_r.detach()
 
-            # **correct VAT update**: normalize, do NOT set r=grad
-            r = grad_r.detach()
+            r_adv = self.vat_eps * self._l2_normalize(r)
 
-        # --- Final adversarial direction ---
-        r_adv = self.vat_eps * self._l2_normalize(r)
+            pert_data_final = x_u.clone()
+            pert_data_final.x = x_u.x + r_adv
 
-        pert_data_final = x_u.clone()
-        pert_data_final.x = x_u.x + r_adv
+            adv_pred = torch.stack([m(pert_data_final) for m in self.models]).mean(0)
+            vat_loss = ((adv_pred - base_pred.detach()) ** 2).mean()
 
-        adv_pred = torch.stack([m(pert_data_final) for m in self.models]).mean(0)
+        finally:
+            # Restore original training/eval states
+            for m, st in zip(self.models, prev_train_states):
+                m.train(st)
 
-        vat_loss = ((adv_pred - base_pred.detach()) ** 2).mean()
         return vat_loss
-
 
     # ------------------------------------------------------------------
     # Validation loop (ensemble averaged prediction)
@@ -383,6 +462,8 @@ class SemiSupervisedEnsemble:
         feature_mask_prob: float | None = None,
         grad_clip_norm: float | None = None,
     ):
+        global_step = 0    
+    
         for epoch in (pbar := tqdm(range(1, total_epochs + 1))):
             # Put models in training mode
             for model in self.models:
@@ -412,20 +493,12 @@ class SemiSupervisedEnsemble:
                 # Supervised loss (standardized targets if stats are available)
                 if y_mean is not None and y_std is not None:
                     targets_std = (targets - y_mean) / y_std
-                    supervised_losses = [
-                        self.supervised_criterion(model(x), targets_std)
-                        for model in self.models
-                    ]
+                    sup_losses = [self.supervised_criterion(model(x), targets_std) for model in self.models]
                 else:
-                    supervised_losses = [
-                        self.supervised_criterion(model(x), targets)
-                        for model in self.models
-                    ]
+                    sup_losses = [self.supervised_criterion(model(x), targets) for model in self.models]
 
-                supervised_loss = sum(supervised_losses)
-                supervised_losses_logged.append(
-                    supervised_loss.detach().item() / len(self.models)
-                )
+                supervised_loss = torch.stack(sup_losses).mean()
+                supervised_losses_logged.append(supervised_loss.detach().item())
 
                 # (Optional) CPS on labeled data is not used; supervised loss
                 # already enforces correctness on labeled targets.
@@ -434,6 +507,9 @@ class SemiSupervisedEnsemble:
                 vat_loss = torch.tensor(0.0, device=self.device)
                 mt_loss = torch.tensor(0.0, device=self.device)
                 ncps_loss_unlabeled = torch.tensor(0.0, device=self.device)
+
+                apply_unsup_this_step = (self.unlabeled_dataloader is not None) and (global_step % self.unsup_every_k_steps == 0)
+
                 if self.unlabeled_dataloader is not None:
                     x_u = self._get_unlabeled_batch()
                     if x_u is not None:
@@ -442,33 +518,41 @@ class SemiSupervisedEnsemble:
                             preds_u_list = [m(x_u) for m in self.models]
                             ncps_loss_unlabeled = self._compute_ncps_loss(preds_u_list)
 
-                        if self.use_vat:
+                        if self.use_vat and apply_unsup_this_step:
                             vat_loss = self._compute_vat_loss(x_u)
+                            
                         if self.use_mean_teacher:
                             mt_loss = self._compute_mean_teacher_loss(x_u)
                 
-                # We want a target ratio of unsupervised to supervised loss 
-                # of about 0.2 to avoid overwhelming the supervised signal.
-                target_ratio = 0.2
-                sup_val = supervised_loss.detach()
-                vat_val = vat_loss.detach()
-                # Evite div0
-                ratio = (vat_val / (sup_val + 1e-8)).item()
-                # Poids effectif pour approcher le ratio cible
-                eff_unsup_weight = min(self.unsup_weight, target_ratio / max(ratio, 1e-6))
+                vat_unsup = torch.tensor(0.0, device=self.device)
+                
+                if self.use_vat and epoch >= self.vat_start_epoch:
+                    epoch_from_start = epoch - self.vat_start_epoch
+                    ramp = self._unsup_rampup(epoch_from_start)
+                    vat_term = ramp * self.unsup_weight * vat_loss
+                    vat_unsup = vat_unsup + vat_term
+                else:
+                    ramp = 0.0
+                    vat_term = torch.tensor(0.0, device=self.device)
 
-                ramp = self._unsup_rampup(epoch)
-                unsup_term = ramp * self.unsup_weight * vat_loss
+                if self.unsup_max_ratio > 0 and vat_unsup.item() > 0 and supervised_loss.item() > 0:
+                    max_unsup = self.unsup_max_ratio * supervised_loss.item()
+                    if vat_unsup.item() > max_unsup:
+                        scale = max_unsup / (vat_unsup.item() + 1e-8)
+                        vat_unsup = vat_unsup * scale
+
                 mt_ramp = self._unsup_rampup(epoch)  # reuse same schedule for mean-teacher
                 total_loss = (
                     supervised_loss
                     + self.ncps_weight * ncps_loss_unlabeled
                     + mt_ramp * self.mean_teacher_weight * mt_loss
-                    + unsup_term
+                    + vat_unsup
                 )
-                print(f"Epoch {epoch} | SupLoss: {supervised_loss.item():.4f} | "
-                      f"UnsupLoss: {unsup_term.item():.4f}"
-                )   
+                print(
+                    f"Epoch {epoch} | SupLoss: {supervised_loss.item():.4f} | "
+                    f"VAT: {vat_unsup.item():.5f} | MT: {mt_loss.item():.5f} | "
+                    f"NCPS: {ncps_loss_unlabeled.item():.5f}"
+                )
 
                 # Backprop on combined loss
                 total_loss.backward()
@@ -491,7 +575,7 @@ class SemiSupervisedEnsemble:
             summary_dict = {"supervised_loss": supervised_losses_logged}
             # Optional: log individual unsupervised components for debugging
             try:
-                summary_dict["vat_loss"] = float(unsup_term.item())
+                summary_dict["vat_loss"] = float(vat_unsup.item())
                 summary_dict["mt_loss"] = float(mt_loss.item())
                 summary_dict["ncps_unlabeled"] = float(ncps_loss_unlabeled.item())
             except Exception:
@@ -511,7 +595,8 @@ class SemiSupervisedEnsemble:
                 if current_val is not None:
                     if current_val < self.best_val:
                         self.best_val = current_val
-                        self._save_checkpoint(epoch=epoch, is_best=True)
+                        extra = {"best_val_MSE": self.best_val, "method": self.method}
+                        self.save_checkpoint(path=self.best_ckpt_path, epoch=epoch, extra=extra)
 
                 # Expose best val to logging
                 if self.best_val < float("inf"):
