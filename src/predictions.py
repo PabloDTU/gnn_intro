@@ -33,7 +33,7 @@ def load_model(ckpt_path: Path, model_cfg_path: Path, device: torch.device):
     model = ModelCls(**model_cfg).to(device)
 
     state = torch.load(ckpt_path, map_location=device)
-    # Support two formats: {"model_state_dict": ...} or {"models": [state_dicts]}
+    # Support: {"model_state_dict": ...}, {"models": [...]}, or a pure state_dict
     if "model_state_dict" in state:
         model.load_state_dict(state["model_state_dict"], strict=True)
     elif "models" in state and isinstance(state["models"], (list, tuple)) and len(state["models"]) > 0:
@@ -198,17 +198,13 @@ def plot_molecules(model, batch, y_mean, y_std, device, title: str, n: int = 8, 
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Évalue plusieurs checkpoints (VAT, non-VAT, autre) sur le test QM9 et affiche des molécules."
-    )
-    parser.add_argument('--ckpt_vat', type=Path, default=None, help='Checkpoint VAT (best_model.pt)')
-    parser.add_argument('--ckpt_no_vat', type=Path, default=None, help='Checkpoint non-VAT (supervisé)')
-    parser.add_argument('--ckpt_other', type=Path, default=None, help='Checkpoint troisième méthode (ex: self-supervised)')
+    parser = argparse.ArgumentParser(description="Évalue un checkpoint sur le test QM9 et affiche des molécules.")
+    parser.add_argument('--path', type=Path, required=True, help='Path (.pt or .ckpt)')
     parser.add_argument('--model_cfg', type=Path, default=Path('configs/model/edge_aware_gcn.yaml'), help='Model config YAML')
     parser.add_argument('--dataset_cfg', type=Path, default=Path('configs/dataset/qm9.yaml'), help='Dataset config YAML')
     parser.add_argument('--device', type=str, default='auto', help='cuda, cpu, ou auto')
-    parser.add_argument('--num_mols', type=int, default=8, help='Nombre de molécules à visualiser par modèle')
-    parser.add_argument('--save_plots', action='store_true', help='Enregistre les grilles de molécules en PNG')
+    parser.add_argument('--num_mols', type=int, default=8, help='Number of molecules to visualize')
+    parser.add_argument('--save_plots', action='store_true', help='Save molecule plots to file')
     args = parser.parse_args()
 
     if args.device == 'auto':
@@ -220,46 +216,19 @@ def main():
     test_loader = dm.test_dataloader()
     y_mean, y_std = dm.target_stats
 
-    models = []
-    states = []
-    labels = []
+    model, state = load_model(args.path, args.model_cfg, device)
+    mse_val = evaluate(model, test_loader, y_mean, y_std, device)
 
-    if args.ckpt_vat:
-        m, s = load_model(args.ckpt_vat, args.model_cfg, device)
-        models.append(m)
-        states.append(s)
-        labels.append("VAT")
-    if args.ckpt_no_vat:
-        m, s = load_model(args.ckpt_no_vat, args.model_cfg, device)
-        models.append(m)
-        states.append(s)
-        labels.append("Non-VAT")
-    if args.ckpt_other:
-        m, s = load_model(args.ckpt_other, args.model_cfg, device)
-        models.append(m)
-        states.append(s)
-        labels.append("Autre")
+    print('=== Test MSE ===')
+    print(f"Checkpoint: {args.path}")
+    print(f"MSE       : {mse_val:.6f} (epoch {state.get('epoch', 'n/a') if isinstance(state, dict) else 'n/a'}, "
+          f"val {state.get('val_MSE', 'n/a') if isinstance(state, dict) else 'n/a'})")
 
-    if not models:
-        raise ValueError("Aucun checkpoint fourni. Passe au moins --ckpt_vat, --ckpt_no_vat ou --ckpt_other.")
-
-    print('=== Test MSE par modèle ===')
-    mses = []
-    for label, model, state in zip(labels, models, states):
-        mse_val = evaluate(model, test_loader, y_mean, y_std, device)
-        mses.append(mse_val)
-        print(f"{label:10s}: {mse_val:.6f} (epoch {state.get('epoch', 'n/a')}, val {state.get('val_MSE', 'n/a')})")
-
-    if len(models) > 1:
-        ensemble_mse = evaluate_ensemble(models, test_loader, y_mean, y_std, device)
-        print(f"Ensemble avg : {ensemble_mse:.6f}")
-
-    # Visualisation des molécules pour chaque modèle
+    # Visualisation des molécules
     try:
         batch_for_viz = next(iter(test_loader))
-        for label, model in zip(labels, models):
-            save_path = f"{label.lower()}_mols.png" if args.save_plots else None
-            plot_molecules(model, batch_for_viz, y_mean, y_std, device, title=f"{label} model", n=args.num_mols, save_path=save_path)
+        save_path = f"{args.path.stem}_mols.png" if args.save_plots else None
+        plot_molecules(model, batch_for_viz, y_mean, y_std, device, title="Model", n=args.num_mols, save_path=save_path)
     except Exception as e:
         print(f"[WARN] Failed to generate molecule plots: {e}")
 
